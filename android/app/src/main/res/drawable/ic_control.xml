@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  智能控车统一图标：纯白线稿、无填充底色。
+  控制中心磁贴 / 长按快捷方式 / 桌面小组件共用。
+  注意：不要用实心圆/色块底 — 部分宿主会把它糊成色块。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- 细线外圆（仅描边，保持可点区域视觉锚点） -->
+    <path
+        android:pathData="M12,12m-10.2,0a10.2,10.2 0,1 1,20.4 0a10.2,10.2 0,1 1,-20.4 0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="0.9"
+        android:fillColor="#00000000" />
+
+    <!-- 线稿轿车侧视：底盘 -->
+    <path
+        android:pathData="M4.2,14.8h15.6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.15"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- 线稿轿车侧视：车身轮廓 -->
+    <path
+        android:pathData="M5.2,14.8v-1.4c0,-0.4 0.2,-0.8 0.5,-1.1l1.1,-1.1 1.6,-2.2c0.3,-0.4 0.7,-0.6 1.2,-0.6h4.8c0.5,0 0.9,0.2 1.2,0.6l1.6,2.2 1.1,1.1c0.3,0.3 0.5,0.7 0.5,1.1v1.4"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.15"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+
+    <!-- 车窗分隔 -->
+    <path
+        android:pathData="M9.1,9.1v2.2M12,8.4v2.9M14.9,9.1v2.2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="0.85"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- 前轮 -->
+    <path
+        android:pathData="M8.0,14.8m-1.35,0a1.35,1.35 0,1 1,2.7 0a1.35,1.35 0,1 1,-2.7 0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.05"
+        android:fillColor="#00000000" />
+
+    <!-- 后轮 -->
+    <path
+        android:pathData="M16.0,14.8m-1.35,0a1.35,1.35 0,1 1,2.7 0a1.35,1.35 0,1 1,-2.7 0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.05"
+        android:fillColor="#00000000" />
+</vector>

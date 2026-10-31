@@ -1,0 +1,184 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- ★ 网络权限必须写在这里（main），不能只靠 debug/profile 的 manifest：
+         Flutter 只在 src/debug 与 src/profile 里加了 INTERNET（给热重载用），
+         release 包不会自动带 —— 缺了它 release 版连车况接口都调不通。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 指纹 / 生物识别认证（用于解锁本地加密保存的控车 PIN） -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+
+    <!-- 本地通知（告警推送：车门未关 / 车窗未关 / 油量低 / 未锁） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- WorkManager 后台轮询（App 关闭时也能拉车况） -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14 (API 34) 起要求 foregroundServiceType，否则前台服务会被系统拒掉 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- ★ 蓝牙数字钥匙前台服务：type=connectedDevice 需要这个专用权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- 预约 AlarmManager 精准闹钟（Android 12+ 可选；无权限会降级 set） -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+
+    <!-- 蓝牙数字钥匙：扫描附近设备 -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
+
+    <application
+        android:label="@string/app_name"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <!-- ★ 2026-09-10：荣耀 / 部分 Android 14 设备在 Impeller(Vulkan) 下渲染黑屏。
+             强制禁用 Impeller（回退 Skia）保证画面正常。 -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableImpeller"
+            android:value="false" />
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- ★ 长按图标的快捷方式（历史数据 / 车辆位置 / 控车）
+                 action 由 MainActivity.onNewIntent / configureFlutterEngine 捕获，
+                 再通过 mymg/shortcut 通道交给 Flutter 路由。 -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- ★ 桌面车况小组件（油量 / 续航 / 总里程 / 锁车状态） -->
+        <receiver
+            android:name=".MymgWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <!-- 调试用：adb shell am broadcast -a com.mymg.app.WIDGET_FORCE_REFRESH
+                     （APPWIDGET_UPDATE 是受保护广播，adb 发不出来，故留此口子） -->
+                <action android:name="com.mymg.app.WIDGET_FORCE_REFRESH" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/mymg_widget_info" />
+        </receiver>
+
+        <!-- 快捷控车：半透明 Activity，不显示主界面 -->
+        <activity
+            android:name=".QuickControlActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/QuickControlTheme"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- ★ 小组件「↻ 刷新」透明壳：必须在 Manifest 注册，
+             否则 PendingIntent 起不来（ActivityNotFound），
+             旧行为会落到 MainActivity → 完整主界面闪一下才关。 -->
+        <activity
+            android:name=".WidgetRefreshActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/QuickControlTheme"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- 小组件 ↻ 真静默刷新：广播 → WorkManager，不进主页 -->
+        <receiver
+            android:name=".WidgetSilentRefreshReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.mymg.app.WIDGET_SILENT_REFRESH" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 易盾网页滑块（半透明悬浮卡）：验证码登录前置 -->
+        <activity
+            android:name=".CaptchaActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- ★ 控制中心磁贴：快捷控车 -->
+        <service
+            android:name=".MymgControlTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_sc_control"
+            android:label="@string/tile_control_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="true" />
+        </service>
+
+        <!-- ★ BLE 数字钥匙保活前台服务：防止进程被冻结导致 GATT 断链、免钥匙启动失效 -->
+        <service
+            android:name=".MymgBleService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- 预约：AlarmManager 到点广播 → 拉起 MainActivity 执行预约 -->
+        <receiver
+            android:name=".ReservationAlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.mymg.app.RUN_RESERVATION" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+</manifest>

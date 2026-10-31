@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  桌面小组件元数据。
+
+  尺寸：**4x2** 单元格（minWidth 250dp / minHeight 110dp）。
+    minHeight 保持 110dp 是给老桌面（API 31 以下不看 targetCell*）兜底用；
+    布局本身带两个 weight=1 的弹性 spacer，宿主给多高都能自适应铺满
+    （固定部分约 129dp，详见 mymg_widget_home.xml 文件头）。
+
+  updatePeriodMillis 30 分钟是系统允许的最小值；
+  真正的即时刷新由 App 侧通过 MethodChannel 触发（见 MymgWidgetProvider.refreshAll）。
+
+  ⚠️ 布局文件名不要改回去：MIUI / AOSP 的 AppWidgetHostView 在
+  RemoteViews 的 **layoutId 相同**时只做部分更新（不重新 inflate），
+  改了布局内容但沿用旧文件名时，桌面会一直显示老布局（实测：换了控车按钮图标却不生效）。
+  需要强制刷新时，换个布局资源名（本次 mymg_widget → mymg_widget_home）即可。
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/mymg_widget_home"
+    android:minHeight="110dp"
+    android:minWidth="250dp"
+    android:previewLayout="@layout/mymg_widget_home"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellHeight="2"
+    android:targetCellWidth="4"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />

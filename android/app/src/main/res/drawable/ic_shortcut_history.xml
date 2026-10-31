@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 历史数据：纯白线稿，无色块底 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:pathData="M12,12m-10.2,0a10.2,10.2 0,1 1,20.4 0a10.2,10.2 0,1 1,-20.4 0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="0.9"
+        android:fillColor="#00000000" />
+
+    <!-- 折线趋势 -->
+    <path
+        android:pathData="M6.2,14.6l3.4,-3.2 2.6,2.0 5.2,-4.8"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+
+    <!-- 数据点 -->
+    <path
+        android:pathData="M6.2,14.6m-0.7,0a0.7,0.7 0,1 1,1.4 0a0.7,0.7 0,1 1,-1.4 0M9.6,11.4m-0.7,0a0.7,0.7 0,1 1,1.4 0a0.7,0.7 0,1 1,-1.4 0M12.2,13.4m-0.7,0a0.7,0.7 0,1 1,1.4 0a0.7,0.7 0,1 1,-1.4 0M17.4,8.6m-0.7,0a0.7,0.7 0,1 1,1.4 0a0.7,0.7 0,1 1,-1.4 0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="0.85"
+        android:fillColor="#00000000" />
+</vector>

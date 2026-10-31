@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  油量进度条。
+  ProgressBar 在 widget 里会用「宿主」（桌面）的主题，colorAccent 可能把我们
+  的柱子染成桌面主题色，所以颜色不靠 drawable，改由 XML 里的
+  progressTint / progressBackgroundTint 显式钉死（见 layout/mymg_widget.xml）。
+  这里只负责「形状」：圆角轨道 + 圆角填充。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <corners android:radius="6dp" />
+            <solid android:color="@color/widget_bar_track" />
+        </shape>
+    </item>
+    <item android:id="@android:id/progress">
+        <clip>
+            <shape android:shape="rectangle">
+                <corners android:radius="6dp" />
+                <solid android:color="@color/widget_bar_fill" />
+            </shape>
+        </clip>
+    </item>
+</layer-list>

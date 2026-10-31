@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 统一三入口图标风格：白线描边 + 细圆环 + 内部线稿图形，无填充色块 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:pathData="M12,12m-10.2,0a10.2,10.2 0,1 1,20.4 0a10.2,10.2 0,1 1,-20.4 0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="0.9"
+        android:fillColor="#00000000" />
+
+    <path
+        android:pathData="M4.2,14.8h15.6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.15"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <path
+        android:pathData="M5.2,14.8v-1.4c0,-0.4 0.2,-0.8 0.5,-1.1l1.1,-1.1 1.6,-2.2c0.3,-0.4 0.7,-0.6 1.2,-0.6h4.8c0.5,0 0.9,0.2 1.2,0.6l1.6,2.2 1.1,1.1c0.3,0.3 0.5,0.7 0.5,1.1v1.4"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.15"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+
+    <path
+        android:pathData="M9.1,9.1v2.2M12,8.4v2.9M14.9,9.1v2.2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="0.85"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <path
+        android:pathData="M8.0,14.8m-1.35,0a1.35,1.35 0,1 1,2.7 0a1.35,1.35 0,1 1,-2.7 0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.05"
+        android:fillColor="#00000000" />
+
+    <path
+        android:pathData="M16.0,14.8m-1.35,0a1.35,1.35 0,1 1,2.7 0a1.35,1.35 0,1 1,-2.7 0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.05"
+        android:fillColor="#00000000" />
+</vector>

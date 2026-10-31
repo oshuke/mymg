@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      小米同款小组件：淡蓝磨砂玻璃底 + 深色文字（对应参考图 1）。
+      浅色实底，对比度稳定，不再跟壁纸一起飘。
+    -->
+    <color name="widget_bg_start">#FFF4F8FF</color>
+    <color name="widget_bg_mid">#FFE8F1FC</color>
+    <color name="widget_bg_end">#FFDCE9F8</color>
+
+    <color name="widget_text_primary">#FF1A1F2E</color>
+    <color name="widget_text_secondary">#FF5C6578</color>
+    <color name="widget_text_tertiary">#FF8B93A3</color>
+
+    <!-- 底部功能键：近白圆角片 -->
+    <color name="widget_badge_bg">#FFFFFFFF</color>
+    <color name="widget_badge_stroke">#1A000000</color>
+
+    <color name="widget_status_normal">#FF3A3A3A</color>
+    <color name="widget_ok">#FF2F6FED</color>
+    <color name="widget_warn">#FFD97706</color>
+    <color name="widget_bad">#FFD97706</color>
+
+    <color name="widget_bar_fill">#FFFFFFFF</color>
+    <color name="widget_bar_track">#33FFFFFF</color>
+    <color name="widget_icon_tint">#FF1A1F2E</color>
+</resources>

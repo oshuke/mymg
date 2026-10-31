@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MYMG</string>
+
+    <!-- 桌面小组件 -->
+    <string name="widget_label">MYMG 车况</string>
+    <string name="widget_description">在桌面直接查看油量 / 续航 / 总里程与锁车状态</string>
+
+    <!-- 长按图标的快捷方式 -->
+    <string name="shortcut_history_short">历史数据</string>
+    <string name="shortcut_history_long">查看历史数据与趋势曲线</string>
+    <string name="shortcut_map_short">车辆位置</string>
+    <string name="shortcut_map_long">在地图上查看车辆停放位置</string>
+    <string name="shortcut_control_short">智能控车</string>
+    <string name="shortcut_control_long">打开智能控车</string>
+
+    <!-- 控制中心磁贴 -->
+    <string name="tile_control_label">智能控车</string>
+</resources>

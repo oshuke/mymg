@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  长按 App 图标静态快捷方式。
+  控车 → QuickControlActivity（与磁贴/小组件同一透明快捷控车入口）。
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_sc_history"
+        android:shortcutId="history"
+        android:shortcutLongLabel="@string/shortcut_history_long"
+        android:shortcutShortLabel="@string/shortcut_history_short">
+        <intent
+            android:action="com.mymg.app.SHORTCUT_HISTORY"
+            android:targetClass="com.mymg.app.MainActivity"
+            android:targetPackage="com.mymg.app" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_sc_map"
+        android:shortcutId="map"
+        android:shortcutLongLabel="@string/shortcut_map_long"
+        android:shortcutShortLabel="@string/shortcut_map_short">
+        <intent
+            android:action="com.mymg.app.SHORTCUT_MAP"
+            android:targetClass="com.mymg.app.MainActivity"
+            android:targetPackage="com.mymg.app" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_sc_control"
+        android:shortcutId="control"
+        android:shortcutLongLabel="@string/shortcut_control_long"
+        android:shortcutShortLabel="@string/shortcut_control_short">
+        <intent
+            android:action="com.mymg.app.QS_CONTROL"
+            android:targetClass="com.mymg.app.QuickControlActivity"
+            android:targetPackage="com.mymg.app" />
+    </shortcut>
+</shortcuts>

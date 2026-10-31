@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <style>
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      background: transparent;
+    }
+    #wrap {
+      width: 100%; min-height: 100%;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #card {
+      background: #fff; border-radius: 12px; padding: 20px 16px 12px;
+      width: 100%; box-shadow: 0 8px 24px rgba(0,0,0,.18);
+    }
+    #captcha-box { width: 100%; min-height: 160px; }
+    #status {
+      text-align: center; color: #888; font-size: 12px; padding: 8px 0 4px;
+    }
+  </style>
+  <script>
+    window.__captchaStarted = false;
+
+    function postOk(v) {
+      try {
+        if (window.CaptchaBridge && v) window.CaptchaBridge.onResult(String(v));
+      } catch (e) {
+        try { window.CaptchaBridge.onError('bridge: ' + e); } catch (_) {}
+      }
+    }
+    function postCancel(msg) {
+      try { if (window.CaptchaBridge) window.CaptchaBridge.onCancel(msg || ''); } catch (_) {}
+    }
+    function postErr(msg) {
+      try { if (window.CaptchaBridge) window.CaptchaBridge.onError(msg || 'error'); } catch (_) {}
+    }
+    function extractValidate(data) {
+      if (!data) return '';
+      return String(
+        data.captchaValidate || data.validate || data.seccode ||
+        data.ticket || data.token || ''
+      );
+    }
+
+    function startCaptcha(captchaId) {
+      if (window.__captchaStarted || !captchaId) return;
+      window.__captchaStarted = true;
+      var el = document.getElementById('status');
+      if (el) el.textContent = '加载滑块…';
+
+      if (typeof initNECaptcha !== 'function') {
+        postErr('易盾 SDK 未加载');
+        return;
+      }
+
+      initNECaptcha({
+        captchaId: captchaId,
+        protocol: 'https',
+        width: '100%',
+        element: '#captcha-box',
+        mode: 'embed',
+        onReady: function () {
+          if (el) el.textContent = '请拖动滑块完成验证';
+          try { if (window.CaptchaBridge) window.CaptchaBridge.onReady(); } catch (_) {}
+        },
+        onVerify: function (err, data) {
+          if (!err) {
+            var v = extractValidate(data);
+            if (v) {
+              if (el) el.textContent = '验证成功，返回登录…';
+              postOk(v);
+              return;
+            }
+            // 没拿到 validate：当取消，可重试
+            if (el) el.textContent = '未获取到结果，请再试一次';
+            postCancel('未获取到 validate');
+            return;
+          }
+          var msg = String((err && (err.message || err.msg)) || err);
+          // 用户关掉/未完成
+          if (/close|cancel|cancel/i.test(msg) || msg.indexOf('关') >= 0) {
+            postCancel(msg);
+          } else {
+            postErr(msg);
+          }
+        },
+        onError: function (err) {
+          postErr(String((err && (err.message || err)) || '滑块异常'));
+        }
+      });
+    }
+
+    function onSdkLoad() {
+      var id = window.__pendingCaptchaId;
+      if (id) startCaptcha(id);
+      else postErr('captchaId 未注入');
+    }
+  </script>
+  <script src="https://cstaticdun.126.net/load.min.js" onload="onSdkLoad()" onerror="postErr('易盾 SDK 加载失败')"></script>
+</head>
+<body>
+  <div id="wrap">
+    <div id="card">
+      <div id="captcha-box"></div>
+      <div id="status">准备中…</div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 小米小组件底部功能键：白底圆角 + 极浅描边 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/widget_badge_bg" />
+    <corners android:radius="14dp" />
+    <stroke
+        android:width="0.5dp"
+        android:color="@color/widget_badge_stroke" />
+</shape>

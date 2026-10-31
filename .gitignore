@@ -1,0 +1,66 @@
+# ---------- 构建产物 ----------
+/build/
+/coverage/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+*.class
+*.pyc
+*.swp
+.pub-cache/
+.pub/
+app.*.symbols
+app.*.map.json
+.widget_preview/
+pubget.log
+
+# Rust
+rust/target/
+**/*.rs.bk
+
+# Android
+android/.gradle/
+android/app/debug/
+android/app/profile/
+android/app/release/
+android/local.properties
+android/key.properties
+android/app/build/
+
+# iOS / macOS
+**/ios/Flutter/.last_build_id
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Generated.xcconfig
+macos/Pods/
+macos/Flutter/ephemeral/
+.swiftpm/
+
+# ---------- 本地私有配置（含你自己的协议参数，绝对不要提交） ----------
+config/protocol.env
+config/*.local.*
+*.keystore
+*.jks
+key.properties
+
+# ---------- 本地数据 / 日志 / 抓包 ----------
+logs/
+*.log
+out.json
+backend_resp*.json
+session*.json
+probe/
+dump/
+*.pcap
+*.har
+
+# ---------- 编辑器 / 系统 ----------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.atom/
+.history
+.svn/

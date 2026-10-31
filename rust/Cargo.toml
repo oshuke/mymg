@@ -1,0 +1,52 @@
+[package]
+name = "mymg_core"
+version = "0.1.0"
+edition = "2021"
+description = "MYMG 核心底层：车联接口请求、解析、换算"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "mymg_core"
+# cdylib/staticlib 供 Android 加载，rlib 便于 cargo check / 单元测试
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+flutter_rust_bridge = { version = "=2.13.0", features = ["serde_json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+thiserror = "2"
+# sign 算法（SAIC 上汽车联接口）
+hmac  = "0.12"
+sha1  = "0.10"
+sha2  = "0.10"
+base64 = "0.22"
+rand  = "0.8"
+# Android logcat 输出（用 println! 会被 Rust runtime 改成 logcat INFO 标签 "mymg_core.rs"）
+log = "0.4"
+android_logger = "0.14"
+
+# TLS 后端按平台分流，原因：
+#   Android  -> rustls(ring)：NDK 自带完整 clang 工具链，交叉编译 ring 的 C 代码无障碍
+#   Windows  -> native-tls(schannel)：宿主仅用于 cargo check / 单元测试，
+#               用系统 schannel 可完全绕开 MinGW 下编译 ring 的 C 代码（gcc 在此环境
+#               被 cc-rs 调用时会返回 exit 1 且无 stderr，排查成本高、收益低）
+#   ！注意：Android 产物才是交付目标，宿主后端不影响最终 APK 的安全性
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+
+[profile.release]
+# ★ 体积优先（小米 15 = arm64-v8a）：
+#   opt-level="z"     —— 以最小体积为优化目标（比 "s" 再小一档）
+#   lto=true          —— 跨 crate 内联，去掉未用符号
+#   codegen-units=1   —— 单编译单元，LTO 效果最大化
+#   strip=true        —— 去掉符号表（.so 常能省 30%~50%）
+#   panic 故意保持 unwind：flutter_rust_bridge 靠 catch_unwind 把 Rust panic
+#   转成 Dart 异常；改成 abort 会让任何一次 panic 直接杀进程，得不偿失。
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
