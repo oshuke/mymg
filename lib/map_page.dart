@@ -1,35 +1,48 @@
-// 内嵌地图页：展示车辆当前 GPS 位置。
-//
-// 路线 A 选用 flutter_map + OpenStreetMap tiles：
-// - 无需开发者 Key（Tencent/高德/百度都要 Key）
-// - 跨平台一致
-// - 缺点：OSM tiles 在大陆访问慢，且坐标系为 WGS-84（与上汽车联的 GCJ-02 有约 500m 偏移）
-//   视觉上能看到车在附近，不影响"看车在哪儿"的功能
-//
-// 后续如果想换更精准的国内地图（GCJ-02 完美对齐），可在 lbs.qq.com 申 Key 后切到腾讯瓦片。
+import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'theme_controller.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'dart:async';
-
-import 'package:mymg/src/rust/api.dart';
-import 'package:mymg/src/rust/vehicle/summary.dart';
-
 import 'coord.dart';
+import 'app_config.dart';
 import 'err_util.dart';
 import 'geocode_service.dart';
+import 'quick_control_sheet.dart';
+import 'src/rust/vehicle/summary.dart';
 import 'summary_cache.dart';
+import 'theme_controller.dart';
+import 'ui/frosted_page.dart';
+import 'ui/glass_surface.dart';
 
-/// 车辆位置地图页
+typedef MapSummaryLoader = Future<VehicleSummary> Function({
+  required String token,
+  required String vin,
+  required bool force,
+});
+
+/// 位置来自车辆上报；地图和导航分别按目标地图转换坐标。
 class MapPage extends StatefulWidget {
-  const MapPage({super.key, required this.token, required this.vin});
+  const MapPage({
+    super.key,
+    required this.token,
+    required this.vin,
+    this.loadSummary,
+    this.resolveAddress,
+    this.openFindControls,
+    this.loadMapTiles = true,
+  });
 
   final String token;
   final String vin;
+  final MapSummaryLoader? loadSummary;
+  final Future<String?> Function(double latitude, double longitude)?
+  resolveAddress;
+  final Future<void> Function(BuildContext context)? openFindControls;
+
+  @visibleForTesting
+  final bool loadMapTiles;
 
   @override
   State<MapPage> createState() => _MapPageState();
@@ -39,16 +52,15 @@ class _MapPageState extends State<MapPage> {
   final MapController _mapController = MapController();
   VehicleSummary? _summary;
   String? _error;
-  bool _loading = true;
-
-  // 上次拉到的坐标（用于 refresh）
-  //   _vehicleLatLng = 纠偏后的 GCJ-02（高德瓦片 / marker 用）
-  //   _wgsLat/_wgsLng = 车联原始 WGS-84（Google Maps / 展示原始值用）
+  bool _loading = false;
+  bool _mapReady = false;
+  bool _geoLoading = false;
+  bool _openingFind = false;
+  int _geoRequest = 0;
   LatLng? _vehicleLatLng;
   double? _wgsLat;
   double? _wgsLng;
   String? _geoLabel;
-  bool _geoLoading = false;
 
   @override
   void initState() {
@@ -56,383 +68,497 @@ class _MapPageState extends State<MapPage> {
     _refresh();
   }
 
-  Future<void> _resolveGeo(double wgsLat, double wgsLng) async {
-    if (_geoLoading) return;
-    _geoLoading = true;
+  @override
+  void dispose() {
+    _geoRequest++;
+    _mapReady = false;
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _resolveGeo(double lat, double lng, int request) async {
+    String? address;
     try {
-      final label = await GeocodeService.instance.labelFor(wgsLat, wgsLng);
-      if (!mounted) return;
-      setState(() => _geoLabel = label);
+      address =
+          await (widget.resolveAddress ?? GeocodeService.instance.labelFor)(
+            lat,
+            lng,
+          );
     } catch (_) {
-    } finally {
-      _geoLoading = false;
+      // 地理编码失败不影响车位与导航，明确显示地址暂不可用。
     }
+    if (!mounted || request != _geoRequest) return;
+    setState(() {
+      final label = address?.trim();
+      _geoLabel = label == null || label.isEmpty || label.startsWith('坐标 ')
+          ? null
+          : label;
+      _geoLoading = false;
+    });
   }
 
   Future<void> _refresh({bool force = true}) async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    if (!mounted || _loading) return;
+    // 刷新期间保留上次错误说明，成功之后才撤销。
+    setState(() => _loading = true);
     try {
-      // 地图要看车位，打开/下拉都按实时
-      final summary = await SummaryCache.fetch(
+      final summary = await (widget.loadSummary ?? SummaryCache.fetch)(
         token: widget.token,
         vin: widget.vin,
         force: force,
       );
       if (!mounted) return;
-      final rawLat = double.tryParse(summary.latitude ?? '');
-      final rawLng = double.tryParse(summary.longitude ?? '');
-      // ★ 车联返回 WGS-84，高德瓦片是 GCJ-02 → 不纠偏会偏约 500m
-      final gcj = (rawLat != null && rawLng != null)
-          ? wgs84ToGcj02(rawLat, rawLng)
-          : null;
-      setState(() {
-        _summary = summary;
-        _wgsLat = rawLat;
-        _wgsLng = rawLng;
-        if (gcj != null) {
-          _vehicleLatLng = LatLng(gcj.lat, gcj.lng);
-        }
-        _loading = false;
-      });
-      if (rawLat != null && rawLng != null) {
-        unawaited(_resolveGeo(rawLat, rawLng));
-      }
-      // 拉到位置后，把地图移到车位置
-      if (gcj != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _mapController
-              .move(LatLng(gcj.lat, gcj.lng), _mapController.camera.zoom);
+      final lat = double.tryParse(summary.latitude?.trim() ?? '');
+      final lng = double.tryParse(summary.longitude?.trim() ?? '');
+      // Web Mercator 无法显示极区；也拒绝缺失、NaN、Infinity 和零点占位。
+      final valid =
+          lat != null &&
+          lng != null &&
+          lat.isFinite &&
+          lng.isFinite &&
+          lat.abs() <= 85.05112878 &&
+          lng.abs() <= 180 &&
+          !(lat == 0 && lng == 0);
+      final request = ++_geoRequest;
+      if (!valid) {
+        setState(() {
+          _geoLoading = false;
+          _error = _vehicleLatLng == null
+              ? '车辆未提供有效位置，请稍后重新定位'
+              : '本次位置无效，正在显示上次车辆位置';
         });
+        return;
       }
+      final gcj = wgs84ToGcj02(lat, lng);
+      setState(() {
+        if (_wgsLat != lat || _wgsLng != lng) _geoLabel = null;
+        _summary = summary;
+        _wgsLat = lat;
+        _wgsLng = lng;
+        _vehicleLatLng = LatLng(gcj.lat, gcj.lng);
+        _geoLoading = true;
+        _error = null;
+      });
+      unawaited(_resolveGeo(lat, lng, request));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _mapReady) _recenter();
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = formatFrbError(e);
-        _loading = false;
+        final reason = formatFrbError(e);
+        _error = _vehicleLatLng == null
+            ? '位置读取失败：$reason'
+            : '刷新失败，正在显示上次车辆位置：$reason';
       });
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _recenter() {
+    if (!mounted || !_mapReady || _vehicleLatLng == null) return;
+    _mapController.move(_vehicleLatLng!, 16);
+  }
+
+  Future<void> _openFind() async {
+    if (_openingFind) return;
+    setState(() => _openingFind = true);
+    try {
+      final opener = widget.openFindControls;
+      if (opener != null) {
+        await opener(context);
+      } else {
+        // 只打开并突出寻车操作，用户点击后才发送指令。
+        await showQuickControlSheet(context, initialAction: 'find');
+      }
+    } finally {
+      if (mounted) setState(() => _openingFind = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final pos = _vehicleLatLng;
     return Scaffold(
       appBar: AppBar(
+        centerTitle: true,
+        backgroundColor: Colors.transparent,
         title: const Text('车辆位置'),
         actions: [
           IconButton(
-            tooltip: '刷新',
-            icon: const Icon(Icons.refresh),
-            onPressed: _loading ? null : _refresh,
+            tooltip: '刷新位置',
+            onPressed: _loading ? null : () => _refresh(),
+            icon: const Icon(Icons.refresh_rounded),
           ),
         ],
       ),
-      body: _buildBody(),
+      body: FrostedBackground(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return RefreshIndicator(
+              onRefresh: () => _refresh(),
+              child: CustomScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                slivers: [
+                  SliverToBoxAdapter(
+                    child: SizedBox(
+                      height: (constraints.maxHeight * 0.58).clamp(
+                        260.0,
+                        560.0,
+                      ),
+                      child: pos == null
+                          ? _emptyPosition()
+                          : Stack(
+                              children: [
+                                FlutterMap(
+                                  mapController: _mapController,
+                                  options: MapOptions(
+                                    initialCenter: pos,
+                                    initialZoom: 16,
+                                    minZoom: 4,
+                                    maxZoom: 19,
+                                    onMapReady: () {
+                                      if (!mounted) return;
+                                      _mapReady = true;
+                                      _recenter();
+                                    },
+                                    interactionOptions:
+                                        const InteractionOptions(
+                                          flags:
+                                              InteractiveFlag.all &
+                                              ~InteractiveFlag.rotate,
+                                        ),
+                                  ),
+                                  children: [
+                                    if (widget.loadMapTiles &&
+                                        AppConfig.mapTilesConfigured)
+                                      TileLayer(
+                                        urlTemplate: AppConfig.mapTileUrl,
+                                        subdomains: AppConfig.mapSubdomains,
+                                        userAgentPackageName: 'com.mymg.app',
+                                        maxNativeZoom: 18,
+                                        tileProvider: NetworkTileProvider(),
+                                      ),
+                                    if (widget.loadMapTiles &&
+                                        AppConfig.mapTilesConfigured)
+                                      RichAttributionWidget(
+                                        attributions: [
+                                          TextSourceAttribution(
+                                            AppConfig.mapAttribution,
+                                          ),
+                                        ],
+                                      ),
+                                    MarkerLayer(
+                                      markers: [
+                                        Marker(
+                                          point: pos,
+                                          width: 52,
+                                          height: 52,
+                                          alignment: Alignment.center,
+                                          child: const Hero(
+                                            tag: 'map-car',
+                                            child: _CarMarker(),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                                Positioned(
+                                  top: 16,
+                                  left: 20,
+                                  right: 20,
+                                  child: GlassSurface(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Icon(
+                                              Icons.place_outlined,
+                                              size: 20,
+                                              color: context.info,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                _error == null
+                                                    ? '车辆位置'
+                                                    : '上次车辆位置',
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: context.strong,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          _geoLabel ??
+                                              (_geoLoading
+                                                  ? '正在获取停车地址…'
+                                                  : '已定位车辆，详细地址暂不可用'),
+                                          maxLines: 3,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            height: 1.5,
+                                            color: context.strong,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                Positioned(
+                                  right: 16,
+                                  bottom: 16,
+                                  child: IconButton.filledTonal(
+                                    tooltip: '地图回到车辆位置',
+                                    onPressed: _recenter,
+                                    icon: const Icon(Icons.my_location_rounded),
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ),
+                  ),
+                  SliverToBoxAdapter(
+                    child: SafeArea(
+                      top: false,
+                      minimum: const EdgeInsets.fromLTRB(12, 12, 12, 20),
+                      child: GlassSurface(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              _updatedLabel(_summary),
+                              style: TextStyle(
+                                fontSize: 12,
+                                height: 1.5,
+                                color: context.muted,
+                              ),
+                            ),
+                            if (_loading) ...[
+                              const SizedBox(height: 12),
+                              LinearProgressIndicator(
+                                minHeight: 2,
+                                color: context.info,
+                              ),
+                            ],
+                            if (_error != null) ...[
+                              const SizedBox(height: 12),
+                              Semantics(
+                                liveRegion: true,
+                                child: Text(
+                                  _error!,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    height: 1.5,
+                                    color: context.danger,
+                                  ),
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 16),
+                            FilledButton(
+                              onPressed: pos == null
+                                  ? null
+                                  : () => _MapNavigation()._openInSystemMap(
+                                      context,
+                                      _wgsLat!,
+                                      _wgsLng!,
+                                    ),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: context.info,
+                                foregroundColor: Theme.of(context)
+                                    .colorScheme
+                                    .onPrimary,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 16,
+                                ),
+                                shape: const StadiumBorder(),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(
+                                    Icons.navigation_rounded,
+                                    size: 22,
+                                  ),
+                                  const SizedBox(width: 10),
+                                  const Flexible(
+                                    child: Text(
+                                      '导航到车',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            LayoutBuilder(
+                              builder: (context, panel) {
+                                final buttons = [
+                                  OutlinedButton(
+                                    onPressed: _loading
+                                        ? null
+                                        : () => _refresh(),
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(
+                                        vertical: 12,
+                                      ),
+                                      child: Text(
+                                        '重新定位',
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ),
+                                  ),
+                                  OutlinedButton(
+                                    onPressed: _openingFind ? null : _openFind,
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(
+                                        vertical: 12,
+                                      ),
+                                      child: Text(
+                                        '闪灯鸣笛寻车',
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ),
+                                  ),
+                                ];
+                                return MediaQuery.textScalerOf(context)
+                                                .scale(14) >
+                                            22 ||
+                                        panel.maxWidth < 250
+                                    ? Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.stretch,
+                                        children: [
+                                          buttons[0],
+                                          const SizedBox(height: 8),
+                                          buttons[1],
+                                        ],
+                                      )
+                                    : Row(
+                                        children: [
+                                          Expanded(child: buttons[0]),
+                                          const SizedBox(width: 12),
+                                          Expanded(child: buttons[1]),
+                                        ],
+                                      );
+                              },
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              '寻车需在控车面板中确认；闪灯和鸣笛不支持单独操作。',
+                              style: TextStyle(
+                                fontSize: 12,
+                                height: 1.5,
+                                color: context.muted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 
-  Widget _buildBody() {
-    if (_loading && _summary == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_error != null && _summary == null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.cloud_off, size: 56, color: Colors.grey),
-              SizedBox(height: 12),
-              Text(_error!, textAlign: TextAlign.center),
-              SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: _refresh,
-                icon: Icon(Icons.refresh),
-                label: Text('重试'),
-              ),
-            ],
+  Widget _emptyPosition() => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_loading && _error == null)
+            const CircularProgressIndicator()
+          else
+            Icon(Icons.location_off_outlined, size: 48, color: context.info),
+          const SizedBox(height: 16),
+          Text(
+            _loading ? '正在获取车辆位置…' : '车辆位置暂不可用',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 16, color: context.strong),
           ),
-        ),
-      );
-    }
+        ],
+      ),
+    ),
+  );
+}
 
-    final pos = _vehicleLatLng;
-    if (pos == null) {
-      return Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.location_off, size: 56, color: Colors.grey),
-              SizedBox(height: 12),
-              Text('车辆暂无 GPS 位置', style: TextStyle(fontSize: 16)),
-              SizedBox(height: 4),
-              Text('服务端未返回坐标，可能是车辆熄火/未联网',
-                  style: TextStyle(color: AppPalette.muted, fontSize: 12)),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return Stack(
-      children: [
-        FlutterMap(
-          mapController: _mapController,
-          options: MapOptions(
-            initialCenter: pos,
-            initialZoom: 16,
-            minZoom: 4,
-            maxZoom: 19,
-            interactionOptions: const InteractionOptions(
-              flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
-            ),
-          ),
-          children: [
-            TileLayer(
-              // 高德地图瓦片（GCJ-02 坐标系，与上汽车联返回的坐标一致）
-              // 相比 OpenStreetMap：国内访问快、视觉精确对齐、中文标注
-              urlTemplate:
-                  'https://webrd0{s}.is.autonavi.com/appmaptile'
-                  '?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
-              subdomains: const ['1', '2', '3', '4'],
-              userAgentPackageName: 'com.mymg.app',
-              maxNativeZoom: 18,
-              tileProvider: NetworkTileProvider(),
-              errorTileCallback: (_, __, ___) {},
-            ),
-            // 一个 marker 显示车位置。
-            // ★ 之前 width/height=48 + alignment=center，而图标实际是 38 圆 + 6 小尾巴，
-            //   中心没对齐车坐标，视觉上往下/往上偏了 ~20px（zoom16 下约 30~40 米）。
-            //   改成 38x38 + 中心对齐，红圆心正压在车坐标上。
-            MarkerLayer(
-              markers: [
-                Marker(
-                  point: pos,
-                  width: 38,
-                  height: 38,
-                  alignment: Alignment.center,
-                  // 与首页位置卡的 Hero 同 tag：从卡片飞入地图车标
-                  child: const Hero(tag: 'map-car', child: _CarMarker()),
-                ),
-              ],
-            ),
-          ],
-        ),
-        // 顶部信息条
-        Positioned(
-          top: 12,
-          left: 12,
-          right: 12,
-          child: _LocationInfoBar(
-            summary: _summary,
-            lat: pos.latitude,
-            lng: pos.longitude,
-            address: _geoLabel,
-            geoLoading: _geoLoading,
-          ),
-        ),
-        // 右下角放大缩小
-        Positioned(
-          right: 12,
-          bottom: 100,
-          child: _ZoomButtons(
-            onZoomIn: () {
-              final cur = _mapController.camera.zoom;
-              final minZ = _mapController.camera.minZoom ?? 4;
-              final maxZ = _mapController.camera.maxZoom ?? 19;
-              _mapController.move(
-                _mapController.camera.center,
-                (cur + 1).clamp(minZ, maxZ),
-              );
-            },
-            onZoomOut: () {
-              final cur = _mapController.camera.zoom;
-              final minZ = _mapController.camera.minZoom ?? 4;
-              final maxZ = _mapController.camera.maxZoom ?? 19;
-              _mapController.move(
-                _mapController.camera.center,
-                (cur - 1).clamp(minZ, maxZ),
-              );
-            },
-          ),
-        ),
-        // 底部按钮条：重新定位到车 / 在系统地图查看
-        Positioned(
-          left: 12,
-          right: 12,
-          bottom: 12,
-          child: _BottomActions(
-            onRecenter: () {
-              _mapController.move(pos, 16);
-            },
-            // 传原始 WGS-84，内部再按目标 App 转对应坐标系
-            wgsLat: _wgsLat ?? pos.latitude,
-            wgsLng: _wgsLng ?? pos.longitude,
-          ),
-        ),
-      ],
-    );
+String _updatedLabel(VehicleSummary? summary) {
+  final raw = summary?.updateTime;
+  if (raw == null || raw <= 0) return '最近更新时间未提供';
+  try {
+    final date = DateTime.fromMillisecondsSinceEpoch(
+      raw > 1000000000000 ? raw : raw * 1000,
+    ).toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '最近更新：${date.year}/${two(date.month)}/${two(date.day)} ${two(date.hour)}:${two(date.minute)}';
+  } on ArgumentError {
+    return '最近更新时间未提供';
   }
 }
 
-// ── 子部件 ──────────────────────────────────────────────────────
-
-/// 车位置图标（红圈 + 🚗）
 class _CarMarker extends StatelessWidget {
   const _CarMarker();
+
   @override
-  Widget build(BuildContext context) {
-    // 只保留 38x38 红圈，中心对齐车坐标；去掉下方 6px 小尾巴，
-    // 否则 marker 用 center 对齐时视觉中心会偏离真实 GPS 点。
-    return Container(
-      width: 38,
-      height: 38,
+  Widget build(BuildContext context) => Semantics(
+    label: '车辆定位标记',
+    child: Container(
+      padding: const EdgeInsets.all(6),
       decoration: BoxDecoration(
-        color: Colors.red.shade600,
+        color: context.info.withValues(alpha: 0.18),
         shape: BoxShape.circle,
-        border: Border.all(color: Colors.white, width: 3),
-        boxShadow: [
-          BoxShadow(blurRadius: 4, color: AppPalette.track, offset: Offset(0, 2)),
-        ],
       ),
-      child: const Icon(Icons.directions_car, color: Colors.white, size: 20),
-    );
-  }
-}
-
-/// 顶部信息条：文字地址 + 坐标 + 服务端时间
-class _LocationInfoBar extends StatelessWidget {
-  const _LocationInfoBar({
-    this.summary,
-    required this.lat,
-    required this.lng,
-    this.address,
-    this.geoLoading = false,
-  });
-  final VehicleSummary? summary;
-  final double lat;
-  final double lng;
-  final String? address;
-  final bool geoLoading;
-
-  @override
-  Widget build(BuildContext context) {
-    final upd = summary?.updateTime;
-    String ts = '—';
-    if (upd != null) {
-      final dt = DateTime.fromMillisecondsSinceEpoch(
-        upd > 1000000000000 ? upd : upd * 1000,
-      );
-      ts = dt.toLocal().toString().split('.').first;
-    }
-    return Material(
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      elevation: 4,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.place, color: Colors.red, size: 18),
-                SizedBox(width: 6),
-                Expanded(
-                  child: Text('车辆位置',
-                      style: TextStyle(fontWeight: FontWeight.w600)),
-                ),
-                Text('已纠偏 GCJ-02',
-                    style: TextStyle(fontSize: 11, color: AppPalette.subtle)),
-              ],
+      child: Container(
+        decoration: BoxDecoration(
+          color: context.info,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 3),
+          boxShadow: [
+            BoxShadow(
+              color: context.info.withValues(alpha: 0.25),
+              blurRadius: 12,
             ),
-            SizedBox(height: 4),
-            Text(
-              address ??
-                  (geoLoading
-                      ? '地址解析中…'
-                      : '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}'),
-              style: TextStyle(fontSize: 13, color: AppPalette.strong),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            Text('服务端时间：$ts',
-                style: TextStyle(fontSize: 11, color: AppPalette.muted)),
           ],
         ),
+        child: const Icon(
+          Icons.directions_car_rounded,
+          color: Colors.white,
+          size: 20,
+        ),
       ),
-    );
-  }
+    ),
+  );
 }
 
-/// 右下角放大缩小按钮组
-class _ZoomButtons extends StatelessWidget {
-  const _ZoomButtons({required this.onZoomIn, required this.onZoomOut});
-  final VoidCallback onZoomIn;
-  final VoidCallback onZoomOut;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        FloatingActionButton.small(
-          heroTag: 'zoom_in',
-          onPressed: onZoomIn,
-          child: const Icon(Icons.add),
-        ),
-        const SizedBox(height: 8),
-        FloatingActionButton.small(
-          heroTag: 'zoom_out',
-          onPressed: onZoomOut,
-          child: const Icon(Icons.remove),
-        ),
-      ],
-    );
-  }
-}
-
-/// 底部操作条：重新定位到车 + 在系统地图查看
-class _BottomActions extends StatelessWidget {
-  const _BottomActions({
-    required this.onRecenter,
-    required this.wgsLat,
-    required this.wgsLng,
-  });
-  final VoidCallback onRecenter;
-  /// 车联原始 WGS-84 坐标（调起 Maps 时按目标 App 转对应坐标系）
-  final double wgsLat;
-  final double wgsLng;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: FilledButton.tonalIcon(
-            onPressed: onRecenter,
-            icon: const Icon(Icons.my_location),
-            label: const Text('定位到车'),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: FilledButton.icon(
-            onPressed: () => _openInSystemMap(context, wgsLat, wgsLng),
-            icon: const Icon(Icons.open_in_new),
-            label: const Text('系统地图打开'),
-          ),
-        ),
-      ],
-    );
-  }
-
+class _MapNavigation {
   Future<void> _openInSystemMap(
-      BuildContext context, double wgsLat, double wgsLng) async {
+    BuildContext context,
+    double wgsLat,
+    double wgsLng,
+  ) async {
     // ★ 高德 / 腾讯：GCJ-02；百度：BD-09
     final gcj = wgs84ToGcj02(wgsLat, wgsLng);
     final bd = gcj02ToBd09(gcj.lat, gcj.lng);
@@ -489,37 +615,43 @@ class _BottomActions extends StatelessWidget {
     if (!context.mounted) return;
     final picked = await showModalBottomSheet<_MapApp>(
       context: context,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 14, 16, 6),
-              child: Text('选择地图打开',
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-            ),
-            for (final app in options)
-              ListTile(
-                leading: const Icon(Icons.map_outlined),
-                title: Text(app.name),
-                trailing: const Icon(Icons.chevron_right, size: 18),
-                onTap: () => Navigator.pop(ctx, app),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 14, 16, 6),
+                child: Text(
+                  '选择地图打开',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                ),
               ),
-            const SizedBox(height: 8),
-          ],
+              for (final app in options)
+                ListTile(
+                  leading: const Icon(Icons.map_outlined),
+                  title: Text(app.name),
+                  trailing: const Icon(Icons.chevron_right, size: 18),
+                  onTap: () => Navigator.pop(ctx, app),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
-    if (picked == null) return;
+    if (picked == null || !context.mounted) return;
 
     await _launchMapApp(context, picked);
   }
 
   Future<void> _launchMapApp(BuildContext context, _MapApp app) async {
     Future<bool> tryLaunch(Uri uri) async {
+      if (!context.mounted) return false;
       try {
         return await launchUrl(uri, mode: LaunchMode.externalApplication);
       } catch (_) {
@@ -535,9 +667,8 @@ class _BottomActions extends StatelessWidget {
       }
     }
     if (!ok && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('调起${app.name}失败，请确认已安装该 App')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('调起${app.name}失败，请确认已安装该 App')));
     }
   }
 }

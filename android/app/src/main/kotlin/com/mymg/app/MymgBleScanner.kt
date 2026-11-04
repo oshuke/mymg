@@ -54,33 +54,24 @@ object MymgBleScanner {
     }
 
     private fun hasScanPermission(context: Context): Boolean {
-        val hasScan = context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
-            PackageManager.PERMISSION_GRANTED
-        val hasConnect = context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
-            PackageManager.PERMISSION_GRANTED
-        val hasLoc = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
-        return if (Build.VERSION.SDK_INT >= 31) {
-            hasScan && hasConnect
-        } else {
-            hasLoc
-        }
+        return BlePermissionController.hasPermissions(context)
     }
 
     @SuppressLint("MissingPermission")
     private fun startScan(context: Context, result: MethodChannel.Result) {
+        // Check before reading adapter state/device properties (CONNECT on 31+).
+        if (!hasScanPermission(context)) {
+            result.error("PERM", "蓝牙权限未授予，请打开应用设置授权后重试", null)
+            return
+        }
+        if (scanning) {
+            result.success(true)
+            return
+        }
         val bm = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bm?.adapter
         if (adapter == null || !adapter.isEnabled) {
             result.error("BT", "蓝牙未开启", null)
-            return
-        }
-        val hasScan = context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
-            PackageManager.PERMISSION_GRANTED
-        val hasLoc = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
-        if (Build.VERSION.SDK_INT >= 31 && !hasScan && !hasLoc) {
-            result.error("PERM", "缺少蓝牙扫描权限", null)
             return
         }
         val scanner = adapter.bluetoothLeScanner
@@ -114,6 +105,13 @@ object MymgBleScanner {
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (!scanning) return
+            val ctx = appContext ?: return
+            if (!hasScanPermission(ctx)) {
+                stopScan()
+                emitScanStopped()
+                return
+            }
+            try {
             val addr = result.device?.address ?: return
             val now = System.currentTimeMillis()
             val last = lastSeen[addr] ?: 0L
@@ -141,11 +139,29 @@ object MymgBleScanner {
                     }
                 }
             }
+            } catch (_: SecurityException) {
+                stopScan()
+                emitScanStopped()
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {
             Log.w(TAG, "scan failed code=$errorCode")
             scanning = false
+            emitScanStopped()
+        }
+    }
+
+    private fun emitScanStopped() {
+        main.post {
+            val snapshot = synchronized(channels) { channels.toList() }
+            snapshot.forEach { ch ->
+                try {
+                    ch.invokeMethod("scanState", mapOf("scanning" to false))
+                } catch (_: Exception) {
+                    channels.remove(ch)
+                }
+            }
         }
     }
 }

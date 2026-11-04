@@ -61,6 +61,9 @@ const _skipPrefKeys = {
   // 控车身份与登录绑定，一并保留本机当前值
   'mymg.user_id',
   'mymg.mobile',
+  // 协议确认仅属于本机本次安装，不随备份迁移或覆盖。
+  'mymg.legal.revision',
+  'mymg.legal.accepted_at',
   // 已弃用/易混淆的历史 key 可在此追加
 };
 

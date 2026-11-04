@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'coord.dart';
+import 'app_config.dart';
 import 'doh_resolver.dart';
 
 class GeocodeService {
@@ -92,6 +93,7 @@ class GeocodeService {
 
   /// 快速返回可展示地址（最长约 budget 秒）。失败返回 null，UI 自己回退坐标。
   Future<String?> reverseFromVehicle(double wgsLat, double wgsLng) async {
+    if (!AppConfig.enablePublicGeocoding) return null;
     final key = _keyFor(wgsLat, wgsLng);
     final p = await SharedPreferences.getInstance();
     final cached = p.getString(_cachePrefix + key);

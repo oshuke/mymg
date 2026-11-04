@@ -22,6 +22,7 @@ import 'package:mymg/src/rust/api.dart';
 import 'package:mymg/src/rust/frb_generated.dart';
 
 import 'alert_rules.dart';
+import 'legal_documents.dart';
 import 'geofence_service.dart';
 import 'official_alert_service.dart';
 import 'reservation_service.dart';
@@ -53,6 +54,7 @@ const String kBgLastErrorKey = 'mymg.bg.last_error';
 @pragma('vm:entry-point')
 void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
+    if (!await LegalConsent.isAccepted()) return true;
     developer.log('[MYMG.BG] executeTask task=$task inputData=$inputData',
         name: 'mymg_core');
     if (task == kFetchTaskName) {

@@ -90,6 +90,4 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     // 小组件静默刷新广播里直接 enqueue WorkManager
     implementation("androidx.work:work-runtime-ktx:2.9.1")
-    // 小米穿戴第三方互通 SDK（手表 interconnect）
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
 }

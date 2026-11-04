@@ -12,6 +12,7 @@ import 'package:mymg/src/rust/api.dart';
 import 'package:mymg/src/rust/vehicle/control.dart';
 
 import 'control_config.dart';
+import 'ble_permission_controller.dart';
 
 const String kBlePreferKey = 'mymg.ble.prefer';
 const String kBleLastMacKey = 'mymg.ble.last_mac';
@@ -26,13 +27,7 @@ const Set<String> kBleCapabilities = {
   'drive', // BASE_DRIVE_CYCLE 120秒打火
 };
 
-enum BleBridgeState {
-  idle,
-  connecting,
-  connected,
-  busy,
-  error,
-}
+enum BleBridgeState { idle, connecting, connected, busy, error }
 
 class BleKeyBridge {
   BleKeyBridge._();
@@ -63,6 +58,7 @@ class BleKeyBridge {
   String? mac;
   String? connectMac;
   int keyRef = 0;
+
   /// SAIC 账号 userId：官方解锁指令载荷是 `"1"+userId`，车端据此认定“哪位用户的数字钥匙在场”
   /// （实测：不带 userId 时能开门、但解锁后无法免钥匙启动）
   String userId = '';
@@ -106,12 +102,16 @@ class BleKeyBridge {
       _lastOkAt != null &&
       DateTime.now().difference(_lastOkAt!) < const Duration(minutes: 3);
 
-  /// 申请蓝牙权限（幂等，失败静默）。
+  /// 等待真实授权结果；拒绝时保持可见、可重试的错误状态。
   /// 控车页可能是独立引擎首次发起 BLE 操作，不主动申请只会看到「缺少蓝牙连接权限」。
-  Future<void> requestBlePermissions() async {
-    try {
-      await _ch.invokeMethod('requestPermissions');
-    } catch (_) {}
+  Future<bool> requestBlePermissions() async {
+    final granted = await BlePermissionController.instance.request();
+    if (!granted) {
+      state = BleBridgeState.error;
+      message = BlePermissionController.deniedMessage;
+      _emit();
+    }
+    return granted;
   }
 
   /// 解锁载荷需要 userId：内存 → 原生缓存 → ControlConfig（登录态里已有）
@@ -154,7 +154,8 @@ class BleKeyBridge {
     return cm.length == 12 && a == cm;
   }
 
-  bool get canBleLock => mac != null && _secretKey != null && _secretKey!.isNotEmpty;
+  bool get canBleLock =>
+      mac != null && _secretKey != null && _secretKey!.isNotEmpty;
   bool get canBleUnlock =>
       mac != null &&
       ((_secretKey != null && _secretKey!.isNotEmpty) ||
@@ -224,7 +225,9 @@ class BleKeyBridge {
       switch (stage) {
         case 'connecting':
           // 短时成功过：静默保活重连，不闪「连接中」
-          state = recentlyOk ? BleBridgeState.connected : BleBridgeState.connecting;
+          state = recentlyOk
+              ? BleBridgeState.connected
+              : BleBridgeState.connecting;
           break;
         case 'connected':
         case 'discovered':
@@ -260,11 +263,11 @@ class BleKeyBridge {
   }
 
   Map<String, dynamic> _payload() => {
-        'stage': state.name,
-        'message': message,
-        'prefer': preferBle,
-        'mac': mac,
-      };
+    'stage': state.name,
+    'message': message,
+    'prefer': preferBle,
+    'mac': mac,
+  };
 
   Future<void> setPrefer(bool v) async {
     preferBle = v;
@@ -288,8 +291,10 @@ class BleKeyBridge {
     var userId = c.userId;
     if (userId.isEmpty) {
       try {
-        final fetched =
-            await authFetchUserId(token: c.token!, deviceId: c.headerDeviceId);
+        final fetched = await authFetchUserId(
+          token: c.token!,
+          deviceId: c.headerDeviceId,
+        );
         if (fetched != null && fetched.isNotEmpty) {
           userId = fetched;
           await ControlConfig.saveIdentity(
@@ -326,15 +331,17 @@ class BleKeyBridge {
       }
       pick ??= all.isNotEmpty ? all.first : null;
       if (pick == null) return false;
-      final raw =
-          pick.raw is Map ? Map<String, dynamic>.from(pick.raw as Map) : null;
+      final raw = pick.raw is Map
+          ? Map<String, dynamic>.from(pick.raw as Map)
+          : null;
       final m = (raw?['tbox_mac'] as String?) ?? pick.mac ?? '';
       if (m.isEmpty) return false;
       mac = m;
       // BLE 广播地址：tbox_mac 首尾 2 字节组对调（见 docs/ble-digital-key-reverse.md）
       final mm = m.replaceAll(':', '').replaceAll('-', '').toUpperCase();
       if (mm.length == 12) {
-        final swapped = mm.substring(8) + mm.substring(4, 8) + mm.substring(0, 4);
+        final swapped =
+            mm.substring(8) + mm.substring(4, 8) + mm.substring(0, 4);
         final parts = <String>[];
         for (var i = 0; i < 12; i += 2) {
           parts.add(swapped.substring(i, i + 2));
@@ -360,20 +367,30 @@ class BleKeyBridge {
   /// 开 App / 进控车页各最多试一次，避免反复重连
   bool _appConnectTried = false;
   bool _sheetConnectTried = false;
+  bool _operationPending = false;
 
   Future<void> connect({String from = 'manual'}) async {
+    if (_operationPending) return;
+    _operationPending = true;
+    try {
+      await _connect(from: from);
+    } finally {
+      _operationPending = false;
+    }
+  }
+
+  Future<void> _connect({required String from}) async {
+    if (!await requestBlePermissions()) return;
     // 已连接则直接复用，不再 probe
     if (state == BleBridgeState.connected) {
       _emit();
       return;
     }
-    if (state == BleBridgeState.connecting || state == BleBridgeState.busy) return;
+    if (state == BleBridgeState.connecting || state == BleBridgeState.busy)
+      return;
     if (preferBle) {
       await setPrefer(true);
     }
-    try {
-      await _ch.invokeMethod('requestPermissions');
-    } catch (_) {}
     // 独立引擎需要先恢复钥匙材料，连接状态不能替代材料同步。
     try {
       final cached = await _ch.invokeMethod<Map>('cachedMaterial');
@@ -391,7 +408,8 @@ class BleKeyBridge {
       }
     } catch (_) {}
     try {
-      final nativeConnected = await _ch.invokeMethod<bool>('isConnected') ?? false;
+      final nativeConnected =
+          await _ch.invokeMethod<bool>('isConnected') ?? false;
       if (nativeConnected) {
         _lastOkAt = DateTime.now();
         state = BleBridgeState.connected;
@@ -430,7 +448,10 @@ class BleKeyBridge {
         }
       } catch (_) {}
     }
-    if (mac == null || keyRef == 0 || _secretKey == null || _secretKey!.isEmpty) {
+    if (mac == null ||
+        keyRef == 0 ||
+        _secretKey == null ||
+        _secretKey!.isEmpty) {
       await loadKeyMaterial();
     }
     if (mac == null) {
@@ -475,7 +496,10 @@ class BleKeyBridge {
   /// 控车弹窗打开：若未连接，再试一次
   Future<void> connectOnceOnSheetOpen() async {
     if (state == BleBridgeState.connected) return;
-    if (_sheetConnectTried && state != BleBridgeState.idle) return;
+    if (_sheetConnectTried &&
+        state != BleBridgeState.idle &&
+        state != BleBridgeState.error)
+      return;
     _sheetConnectTried = true;
     await init();
     if (!preferBle) return;
@@ -493,6 +517,17 @@ class BleKeyBridge {
 
   /// 发起 BLE 控车。返回 true 表示已交给 BLE（结果看 events）。
   Future<bool> send(String action) async {
+    if (_operationPending || state == BleBridgeState.busy) return false;
+    _operationPending = true;
+    try {
+      if (!await requestBlePermissions()) return false;
+      return await _send(action);
+    } finally {
+      _operationPending = false;
+    }
+  }
+
+  Future<bool> _send(String action) async {
     // 材料补齐顺序：原生落盘（离线/磁贴/小组件冷启动）→ 联网钥匙列表 → 再读一次原生。
     // 旧逻辑只看 mac/keyRef，密钥为空时 lock/trunk/drive 会直接 return false，
     // 界面上只剩一句没信息量的"发送失败"（用户 2026-10-26 报的三入口控车失败即此）。
@@ -564,7 +599,10 @@ class BleKeyBridge {
         default:
           return false;
       }
-    } catch (_) {
+    } catch (e) {
+      state = BleBridgeState.error;
+      message = _friendlyBleError(e);
+      _emit();
       return false;
     }
   }

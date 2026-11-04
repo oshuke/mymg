@@ -10,23 +10,29 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:mymg/src/rust/api.dart';
-
 import 'ai_settings_section.dart';
+import 'about_page.dart';
+import 'app_config.dart';
 import 'alert_rules.dart';
 import 'background.dart';
 import 'car_image_store.dart';
+import 'car_image_settings_page.dart';
 import 'control_config.dart';
 import 'control_settings_section.dart';
 import 'digital_key_section.dart';
 import 'geofence_service.dart';
 import 'login_page.dart';
+
+import 'message_center_page.dart' show MessageCenterPage;
 import 'official_alert_service.dart';
 import 'notification_service.dart';
+import 'settings_components.dart';
 import 'store.dart';
 import 'summary_cache.dart';
 import 'token_age.dart';
 import 'theme_controller.dart';
+import 'ui/glass_surface.dart';
+import 'ui_design_tokens.dart';
 import 'vehicle_profile.dart';
 import 'webdav_settings_section.dart';
 import 'widget_sync.dart';
@@ -42,7 +48,11 @@ class _SettingsRev extends ChangeNotifier {
 
 /// 分类详情页：内容由设置页提供（状态不回迁），随设置页变化实时重建
 class _SectionPage extends StatelessWidget {
-  const _SectionPage({required this.title, required this.rev, required this.body});
+  const _SectionPage({
+    required this.title,
+    required this.rev,
+    required this.body,
+  });
 
   final String title;
   final Listenable rev;
@@ -50,13 +60,23 @@ class _SectionPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(title)),
-      body: AnimatedBuilder(
+    return SettingsPageFrame(
+      title: title,
+      child: AnimatedBuilder(
         animation: rev,
         builder: (context, _) => ListView(
-          padding: const EdgeInsets.only(bottom: 24),
-          children: body(),
+          padding: const EdgeInsets.fromLTRB(
+            MyMgSpacing.page,
+            8,
+            MyMgSpacing.page,
+            32,
+          ),
+          children: [
+            GlassSurface(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Column(mainAxisSize: MainAxisSize.min, children: body()),
+            ),
+          ],
         ),
       ),
     );
@@ -64,9 +84,15 @@ class _SectionPage extends StatelessWidget {
 }
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key, required this.token, required this.vin});
+  const SettingsPage({
+    super.key,
+    required this.token,
+    required this.vin,
+    this.embedded = false,
+  });
   final String token;
   final String vin;
+  final bool embedded;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -129,6 +155,7 @@ class _SettingsPageState extends State<SettingsPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _rev.dispose();
     super.dispose();
   }
 
@@ -191,8 +218,10 @@ class _SettingsPageState extends State<SettingsPage>
       _bgLastRunMs = prefs.getInt(kBgLastRunKey);
       _bgLastError = prefs.getString(kBgLastErrorKey);
       _maintEnabled = prefs.getBool('mymg.maint.enabled') ?? true;
-      _maintIntervalKm =
-          (prefs.getInt('mymg.maint.interval_km') ?? 5000).clamp(1000, 50000);
+      _maintIntervalKm = (prefs.getInt('mymg.maint.interval_km') ?? 5000).clamp(
+        1000,
+        50000,
+      );
       _maintLastKm = prefs.getInt('mymg.maint.last_notified_km') ?? 0;
       _maintCurrentKm = maintCurrent;
       _count = count;
@@ -206,12 +235,19 @@ class _SettingsPageState extends State<SettingsPage>
     });
   }
 
-
   /// 小组件车辆图 / 背景图：直接从图库选择（PNG 透明底可用）/ 恢复默认
-  Future<void> _pickWidgetImage(BuildContext context,
-      {required String kind}) async {
+  Future<void> _pickWidgetImage(
+    BuildContext context, {
+    required String kind,
+  }) async {
     final isCar = kind == 'car';
-    final title = isCar ? '小组件车辆图片' : '小组件背景图片';
+    if (isCar) {
+      await Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const CarImageSettingsPage()));
+      return;
+    }
+    final title = isCar ? '车辆图片（首页与小组件）' : '小组件背景图片';
     final action = await showModalBottomSheet<String>(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -223,14 +259,20 @@ class _SettingsPageState extends State<SettingsPage>
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-              child: Text(title,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w700, fontSize: 15)),
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 15,
+                ),
+              ),
             ),
             ListTile(
               leading: const Icon(Icons.photo_library_outlined),
               title: const Text('从图库选择'),
-              subtitle: const Text('直接打开相册 · PNG 支持透明底'),
+              subtitle: Text(
+                isCar ? '首页与小组件同步 · PNG 支持透明底' : '直接打开相册 · PNG 支持透明底',
+              ),
               onTap: () => Navigator.pop(ctx, 'gallery'),
             ),
             ListTile(
@@ -246,14 +288,14 @@ class _SettingsPageState extends State<SettingsPage>
     if (action == null || !mounted) return;
     if (action == 'reset') {
       if (isCar) {
+        await CarImageStore.resetToDefault();
         await WidgetSync.setWidgetCarImage(null);
       } else {
         await WidgetSync.setWidgetBgImage(null);
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(isCar ? '小组件车图已恢复默认' : '小组件背景已清除')),
+          SnackBar(content: Text(isCar ? '车辆图片已恢复默认' : '小组件背景已清除')),
         );
       }
       return;
@@ -278,14 +320,13 @@ class _SettingsPageState extends State<SettingsPage>
         }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(isCar ? '小组件车图已更新' : '小组件背景已更新')),
+            SnackBar(content: Text(isCar ? '车辆图片已更新' : '小组件背景已更新')),
           );
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('选图失败：$e')),
-          );
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('选图失败：$e')));
         }
       }
     }
@@ -300,6 +341,7 @@ class _SettingsPageState extends State<SettingsPage>
     await out.writeAsBytes(await File(sourcePath).readAsBytes(), flush: true);
     return out.path;
   }
+
   Future<void> _setAlertsEnabled(bool v) async {
     final p = await SharedPreferences.getInstance();
     await p.setBool(kAlertsEnabledKey, v);
@@ -314,18 +356,17 @@ class _SettingsPageState extends State<SettingsPage>
         body: '告警推送通道正常',
       );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('已发送测试通知')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('已发送测试通知')));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('测试通知失败：$e')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('测试通知失败：$e')));
       }
     }
   }
+
   Future<void> _setDoors(bool v) async {
     final p = await SharedPreferences.getInstance();
     await p.setBool(kAlertDoorsKey, v);
@@ -373,8 +414,14 @@ class _SettingsPageState extends State<SettingsPage>
           title: const Text('测试告警推送？'),
           content: const Text('后台轮询开启后，建议先测一条通知确认权限。'),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('跳过')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('测试')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('跳过'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('测试'),
+            ),
           ],
         ),
       );
@@ -393,7 +440,10 @@ class _SettingsPageState extends State<SettingsPage>
   }
 
   Future<void> _cleanOld() async {
-    final n = await SnapshotStore.instance.cleanOlderThan(days: 30, vin: widget.vin);
+    final n = await SnapshotStore.instance.cleanOlderThan(
+      days: 30,
+      vin: widget.vin,
+    );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(n == 0 ? '没有 30 天前的数据' : '已删除 $n 条')),
@@ -408,7 +458,10 @@ class _SettingsPageState extends State<SettingsPage>
         title: const Text('清空本机全部快照？'),
         content: const Text('本机数据库的所有快照将清空，无法恢复。\n不影响服务端。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('清空', style: TextStyle(color: Colors.red)),
@@ -419,7 +472,8 @@ class _SettingsPageState extends State<SettingsPage>
     if (ok != true) return;
     final n = await SnapshotStore.instance.deleteAll(widget.vin);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已删除 $n 条')));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('已删除 $n 条')));
     await _load();
   }
 
@@ -430,9 +484,8 @@ class _SettingsPageState extends State<SettingsPage>
       final lng = double.tryParse(s.longitude ?? '');
       if (lat == null || lng == null || (lat == 0 && lng == 0)) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('当前无有效车辆坐标，请先在主页刷新车况')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('当前无有效车辆坐标，请先在主页刷新车况')));
         return;
       }
       await GeofenceService.save(
@@ -452,14 +505,14 @@ class _SettingsPageState extends State<SettingsPage>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-              '围栏中心已设为 ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}'),
+            '围栏中心已设为 ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}',
+          ),
         ),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('获取车辆位置失败：$e')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('获取车辆位置失败：$e')));
     }
   }
 
@@ -510,22 +563,26 @@ class _SettingsPageState extends State<SettingsPage>
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              title: const Text('关闭自动刷新'),
-              leading: const Icon(Icons.pause),
-              onTap: () => Navigator.pop(ctx, 0),
-            ),
-            const Divider(height: 1),
-            for (final m in kIntervalOptions)
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               ListTile(
-                title: Text(m == 1 ? '每 1 分钟' : '每 $m 分钟'),
-                trailing: _intervalMin == m && _autoRefresh ? const Icon(Icons.check) : null,
-                onTap: () => Navigator.pop(ctx, m),
+                title: const Text('关闭自动刷新'),
+                leading: const Icon(Icons.pause),
+                onTap: () => Navigator.pop(ctx, 0),
               ),
-          ],
+              const Divider(height: 1),
+              for (final m in kIntervalOptions)
+                ListTile(
+                  title: Text(m == 1 ? '每 1 分钟' : '每 $m 分钟'),
+                  trailing: _intervalMin == m && _autoRefresh
+                      ? const Icon(Icons.check)
+                      : null,
+                  onTap: () => Navigator.pop(ctx, m),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -537,10 +594,11 @@ class _SettingsPageState extends State<SettingsPage>
     } else {
       await p.setBool(kAutoRefreshKey, true);
       await p.setInt(kIntervalMinKey, v);
-      if (mounted) setState(() {
-        _autoRefresh = true;
-        _intervalMin = v;
-      });
+      if (mounted)
+        setState(() {
+          _autoRefresh = true;
+          _intervalMin = v;
+        });
     }
   }
 
@@ -595,11 +653,14 @@ class _SettingsPageState extends State<SettingsPage>
                         ),
                       ),
                       const SizedBox(height: 16),
-                      Text('提醒间隔',
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: AppPalette.strong)),
+                      Text(
+                        '提醒间隔',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppPalette.strong,
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
@@ -607,7 +668,8 @@ class _SettingsPageState extends State<SettingsPage>
                         children: [1000, 3000, 5000, 10000, 15000].map((km) {
                           return ChoiceChip(
                             label: Text(
-                                km >= 1000 ? '${km ~/ 1000}k km' : '$km km'),
+                              km >= 1000 ? '${km ~/ 1000}k km' : '$km km',
+                            ),
                             selected: _maintIntervalKm == km,
                             onSelected: (_) async {
                               setSheet(() => _maintIntervalKm = km);
@@ -619,16 +681,23 @@ class _SettingsPageState extends State<SettingsPage>
                         }).toList(),
                       ),
                       const SizedBox(height: 20),
-                      Text('上次提醒里程',
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: AppPalette.strong)),
+                      Text(
+                        '上次提醒里程',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppPalette.strong,
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       if (cur != null)
-                        Text('系统当前：$cur km',
-                            style: TextStyle(
-                                fontSize: 12, color: AppPalette.muted)),
+                        Text(
+                          '系统当前：$cur km',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppPalette.muted,
+                          ),
+                        ),
                       const SizedBox(height: 10),
                       TextFormField(
                         initialValue: _maintLastKm > 0
@@ -660,7 +729,9 @@ class _SettingsPageState extends State<SettingsPage>
                                   final p =
                                       await SharedPreferences.getInstance();
                                   await p.setInt(
-                                      'mymg.maint.last_notified_km', cur);
+                                    'mymg.maint.last_notified_km',
+                                    cur,
+                                  );
                                   setState(() {});
                                 },
                           child: const Text('用系统当前里程'),
@@ -677,7 +748,9 @@ class _SettingsPageState extends State<SettingsPage>
                           child: Text(
                             '下次提醒约：$next km（还差 ${next - (cur ?? next)} km）',
                             style: TextStyle(
-                                fontSize: 13, color: AppPalette.strong),
+                              fontSize: 13,
+                              color: AppPalette.strong,
+                            ),
                           ),
                         ),
                       ],
@@ -692,7 +765,9 @@ class _SettingsPageState extends State<SettingsPage>
                         onPressed: () async {
                           final p = await SharedPreferences.getInstance();
                           await p.setInt(
-                              'mymg.maint.last_notified_km', _maintLastKm);
+                            'mymg.maint.last_notified_km',
+                            _maintLastKm,
+                          );
                           if (ctx.mounted) Navigator.pop(ctx);
                           await _load();
                         },
@@ -722,88 +797,143 @@ class _SettingsPageState extends State<SettingsPage>
         ? _maintLastKm + _maintIntervalKm
         : null;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('设置')),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+    return SettingsPageFrame(
+      title: '设置',
+      embedded: widget.embedded,
+      child: ListView(
+        padding: EdgeInsets.fromLTRB(
+          MyMgSpacing.page,
+          8,
+          MyMgSpacing.page,
+          32 + MediaQuery.paddingOf(context).bottom,
+        ),
         children: [
           _collapsible(
             icon: Icons.person_outline,
             title: '账号',
             subtitle: brandLabel,
             children: [
-          ListTile(
-            leading: const Icon(Icons.person_outline),
-            title: Text(brandLabel),
-            subtitle: Text(
-              [
-                if (_mobile.isNotEmpty) _mask(_mobile, 3, 4),
-                if (_userId.isNotEmpty) _mask(_userId, 4, 4),
-                if (_tokenAge.isNotEmpty) _tokenAge,
-              ].join(' · '),
-              style: const TextStyle(fontSize: 12),
-            ),
+              ListTile(
+                leading: const Icon(Icons.person_outline),
+                title: Text(brandLabel),
+                subtitle: Text(
+                  [
+                    if (_mobile.isNotEmpty) _mask(_mobile, 3, 4),
+                    if (_userId.isNotEmpty) _mask(_userId, 4, 4),
+                    if (_tokenAge.isNotEmpty) _tokenAge,
+                  ].join(' · '),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.directions_car_outlined),
+                title: const Text('车辆'),
+                subtitle: Text(
+                  [
+                    if (_plate.isNotEmpty) _plate else '车牌未获取',
+                    _mask(widget.vin, 6, 4),
+                  ].join(' · '),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
           ),
-          ListTile(
-            leading: const Icon(Icons.directions_car_outlined),
-            title: const Text('车辆'),
-            subtitle: Text(
-              [
-                if (_plate.isNotEmpty) _plate else '车牌未获取',
-                _mask(widget.vin, 6, 4),
-              ].join(' · '),
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.brightness_6_outlined,
             title: '外观',
             subtitle: ThemeScope.of(context).label,
             children: [
-          Builder(
-            builder: (context) {
-              final ctrl = ThemeScope.of(context);
-              return ListTile(
-                leading: const Icon(Icons.brightness_6_outlined),
-                title: const Text('主题'),
-                subtitle: Text(ctrl.label),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _pickThemeMode(context),
-              );
-            },
+              Builder(
+                builder: (context) {
+                  final ctrl = ThemeScope.of(context);
+                  return ListTile(
+                    leading: const Icon(Icons.brightness_6_outlined),
+                    title: const Text('主题'),
+                    subtitle: Text(ctrl.label),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => _pickThemeMode(context),
+                  );
+                },
+              ),
+            ],
           ),
-
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
+          SettingsEntryRow(
+            icon: Icons.notifications_none_rounded,
+            title: '消息中心',
+            subtitle: const Text('本地提醒与云端消息'),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) =>
+                    MessageCenterPage(token: widget.token, vin: widget.vin),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SettingsEntryRow(
+            icon: Icons.photo_outlined,
+            title: '车辆图片',
+            subtitle: const Text('首页与桌面小组件共用'),
+            onTap: () => _pickWidgetImage(context, kind: 'car'),
+          ),
+          const SizedBox(height: 8),
+          SettingsEntryRow(
+            icon: Icons.bluetooth_rounded,
+            title: '蓝牙数字钥匙',
+            subtitle: const Text('钥匙管理 · 车旁操作 · 连接诊断'),
+            onTap: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const DigitalKeyPage())),
+          ),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.sync_outlined,
             title: '数据刷新',
             subtitle: _autoRefresh ? '每 $_intervalMin 分钟' : '已关闭',
             children: [
-          ListTile(
-            leading: const Icon(Icons.sync_outlined),
-            title: const Text('自动刷新'),
-            subtitle: Text(_autoRefresh ? '每 $_intervalMin 分钟' : '已关闭'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: _pickRefreshInterval,
+              ListTile(
+                leading: const Icon(Icons.sync_outlined),
+                title: const Text('自动刷新'),
+                subtitle: Text(_autoRefresh ? '每 $_intervalMin 分钟' : '已关闭'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: _pickRefreshInterval,
+              ),
+            ],
           ),
-
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
+          _collapsible(
+            icon: Icons.map_outlined,
+            title: '地图与位置',
+            subtitle: AppConfig.mapTilesConfigured ? '已配置图源' : '图源尚未配置',
+            children: [
+              ListTile(
+                title: const Text('地图图源'),
+                subtitle: Text(
+                  AppConfig.mapTilesConfigured
+                      ? AppConfig.mapAttribution
+                      : '开源版默认不加载在线地图。构建时配置有使用授权的 GCJ-02 图源和署名，详见 docs/PROTOCOL.md。',
+                ),
+              ),
+              ListTile(
+                title: const Text('在线地址解析'),
+                subtitle: Text(
+                  AppConfig.enablePublicGeocoding
+                      ? '已启用：车辆坐标会发送至第三方地址服务。'
+                      : '默认关闭：构建时可显式启用，启用前请阅读隐私说明。',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.settings_remote,
             title: '远程控车',
             subtitle: '账号 · 控车密码 · 品牌',
-            children: [
-          const ControlSettingsSection(),
-          ]),
+            children: [const ControlSettingsSection()],
+          ),
 
-          const Divider(height: 1, indent: 16, endIndent: 16),
-          const DigitalKeyEntryTile(),
-
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.auto_awesome,
             title: 'AI 智能分析',
@@ -811,7 +941,7 @@ class _SettingsPageState extends State<SettingsPage>
             children: const [AiSettingsSection()],
           ),
 
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.cloud_outlined,
             title: '坚果云备份',
@@ -819,421 +949,421 @@ class _SettingsPageState extends State<SettingsPage>
             children: const [WebDavSettingsSection()],
           ),
 
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.notifications_none,
             title: '告警推送',
             subtitle: _alertsEnabled ? '已开启' : '已关闭',
             children: [
-          SwitchListTile(
-            value: _alertsEnabled,
-            onChanged: _setAlertsEnabled,
-            title: const Text('开启告警推送'),
-          ),
-          SwitchListTile(
-            dense: true,
-            value: _officialAlerts,
-            onChanged: _setOfficialAlerts,
-            title: const Text('云端告警（vehicle_alerts）'),
-            subtitle: const Text('服务端告警差集推送，与本地规则互补',
-                style: TextStyle(fontSize: 12)),
-          ),
-          if (_alertsEnabled) ...[
-            ListTile(
-              dense: true,
-              title: const Text('推送级别', style: TextStyle(fontSize: 13)),
-              subtitle: Text(
-                const ['全部（含提示）', '警告及以上', '仅严重'][_alertMinLevel],
-                style: const TextStyle(fontSize: 12),
+              SwitchListTile(
+                value: _alertsEnabled,
+                onChanged: _setAlertsEnabled,
+                title: const Text('开启告警推送'),
               ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () async {
-                final v = await showModalBottomSheet<int>(
-                  context: context,
-                  builder: (ctx) => SafeArea(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        ListTile(
-                          title: const Text('全部（含提示）'),
-                          trailing:
-                              _alertMinLevel == 0 ? const Icon(Icons.check) : null,
-                          onTap: () => Navigator.pop(ctx, 0),
-                        ),
-                        ListTile(
-                          title: const Text('警告及以上'),
-                          trailing:
-                              _alertMinLevel == 1 ? const Icon(Icons.check) : null,
-                          onTap: () => Navigator.pop(ctx, 1),
-                        ),
-                        ListTile(
-                          title: const Text('仅严重'),
-                          trailing:
-                              _alertMinLevel == 2 ? const Icon(Icons.check) : null,
-                          onTap: () => Navigator.pop(ctx, 2),
-                        ),
-                      ],
-                    ),
+              SwitchListTile(
+                dense: true,
+                value: _officialAlerts,
+                onChanged: _setOfficialAlerts,
+                title: const Text('云端告警（vehicle_alerts）'),
+                subtitle: const Text(
+                  '服务端告警差集推送，与本地规则互补',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+              if (_alertsEnabled) ...[
+                ListTile(
+                  dense: true,
+                  title: const Text('推送级别', style: TextStyle(fontSize: 13)),
+                  subtitle: Text(
+                    const ['全部（含提示）', '警告及以上', '仅严重'][_alertMinLevel],
+                    style: const TextStyle(fontSize: 12),
                   ),
-                );
-                if (v == null) return;
-                await AlertRules.setMinLevel(v);
-                if (mounted) setState(() => _alertMinLevel = v);
-              },
-            ),
-            SwitchListTile(
-              dense: true,
-              value: _doorsAlert,
-              onChanged: _setDoors,
-              title: const Text('车门未关'),
-            ),
-            SwitchListTile(
-              dense: true,
-              value: _windowsAlert,
-              onChanged: _setWindows,
-              title: const Text('车窗未关'),
-            ),
-            SwitchListTile(
-              dense: true,
-              value: _unlockedAlert,
-              onChanged: _setUnlocked,
-              title: const Text('车门未锁（严重）'),
-            ),
-            SwitchListTile(
-              dense: true,
-              value: _lowFuelAlert,
-              onChanged: _setLowFuel,
-              title: Text('油量过低（$_lowFuelThreshold%）'),
-            ),
-            ListTile(
-              dense: true,
-              title: Row(
-                children: [
-                  const Text('油量阈值', style: TextStyle(fontSize: 13)),
-                  const Spacer(),
-                  Text('$_lowFuelThreshold%', style: const TextStyle(fontWeight: FontWeight.w600)),
-                ],
-              ),
-              subtitle: Slider(
-                value: _lowFuelThreshold.toDouble(),
-                min: 5,
-                max: 50,
-                divisions: 9,
-                onChanged: (v) => _setLowFuelThreshold(v.round()),
-              ),
-            ),
-          ],
-
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    final v = await showModalBottomSheet<int>(
+                      context: context,
+                      builder: (ctx) => SafeArea(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ListTile(
+                              title: const Text('全部（含提示）'),
+                              trailing: _alertMinLevel == 0
+                                  ? const Icon(Icons.check)
+                                  : null,
+                              onTap: () => Navigator.pop(ctx, 0),
+                            ),
+                            ListTile(
+                              title: const Text('警告及以上'),
+                              trailing: _alertMinLevel == 1
+                                  ? const Icon(Icons.check)
+                                  : null,
+                              onTap: () => Navigator.pop(ctx, 1),
+                            ),
+                            ListTile(
+                              title: const Text('仅严重'),
+                              trailing: _alertMinLevel == 2
+                                  ? const Icon(Icons.check)
+                                  : null,
+                              onTap: () => Navigator.pop(ctx, 2),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                    if (v == null) return;
+                    await AlertRules.setMinLevel(v);
+                    if (mounted) setState(() => _alertMinLevel = v);
+                  },
+                ),
+                SwitchListTile(
+                  dense: true,
+                  value: _doorsAlert,
+                  onChanged: _setDoors,
+                  title: const Text('车门未关'),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  value: _windowsAlert,
+                  onChanged: _setWindows,
+                  title: const Text('车窗未关'),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  value: _unlockedAlert,
+                  onChanged: _setUnlocked,
+                  title: const Text('车门未锁（严重）'),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  value: _lowFuelAlert,
+                  onChanged: _setLowFuel,
+                  title: Text('油量过低（$_lowFuelThreshold%）'),
+                ),
+                ListTile(
+                  dense: true,
+                  title: Row(
+                    children: [
+                      const Text('油量阈值', style: TextStyle(fontSize: 13)),
+                      const Spacer(),
+                      Text(
+                        '$_lowFuelThreshold%',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                  subtitle: Slider(
+                    value: _lowFuelThreshold.toDouble(),
+                    min: 5,
+                    max: 50,
+                    divisions: 9,
+                    onChanged: (v) => _setLowFuelThreshold(v.round()),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.place_outlined,
             title: '地理围栏 / 异常移动',
             subtitle: _fenceEnabled ? '已启用' : '未启用',
             children: [
-          SwitchListTile(
-            value: _fenceEnabled,
-            title: const Text('启用围栏与移动提醒'),
-            subtitle: const Text('按后台拉取的 GPS 判断进出/大位移', style: TextStyle(fontSize: 12)),
-            onChanged: (v) async {
-              await GeofenceService.save(
-                enabled: v,
-                lat: _fenceLat,
-                lng: _fenceLng,
-                radiusM: _fenceRadius,
-                alertMove: _fenceMove,
-                alertEnterExit: _fenceEnterExit,
-              );
-              setState(() => _fenceEnabled = v);
-            },
-          ),
-          if (_fenceEnabled) ...[
-            ListTile(
-              dense: true,
-              title: const Text('围栏中心', style: TextStyle(fontSize: 13)),
-              subtitle: Text(
-                _fenceLat == null
-                    ? '未设置（用当前车辆坐标）'
-                    : '${_fenceLat!.toStringAsFixed(5)}, ${_fenceLng!.toStringAsFixed(5)}',
-                style: const TextStyle(fontSize: 12),
-              ),
-              trailing: TextButton(
-                onPressed: _setFenceFromCurrentCar,
-                child: const Text('用车辆位置'),
-              ),
-            ),
-            ListTile(
-              dense: true,
-              title: Row(
-                children: [
-                  const Text('半径', style: TextStyle(fontSize: 13)),
-                  const Spacer(),
-                  Text('${_fenceRadius.round()} m',
-                      style: const TextStyle(fontWeight: FontWeight.w600)),
-                ],
-              ),
-              subtitle: Slider(
-                value: _fenceRadius,
-                min: 50,
-                max: 1000,
-                divisions: 19,
-                onChanged: (v) => setState(() => _fenceRadius = v),
-                onChangeEnd: (v) async {
+              SwitchListTile(
+                value: _fenceEnabled,
+                title: const Text('启用围栏与移动提醒'),
+                subtitle: const Text(
+                  '按后台拉取的 GPS 判断进出/大位移',
+                  style: TextStyle(fontSize: 12),
+                ),
+                onChanged: (v) async {
                   await GeofenceService.save(
-                    enabled: true,
+                    enabled: v,
                     lat: _fenceLat,
                     lng: _fenceLng,
-                    radiusM: v,
+                    radiusM: _fenceRadius,
                     alertMove: _fenceMove,
                     alertEnterExit: _fenceEnterExit,
                   );
+                  setState(() => _fenceEnabled = v);
                 },
               ),
-            ),
-            SwitchListTile(
-              dense: true,
-              value: _fenceEnterExit,
-              title: const Text('进出围栏时提醒'),
-              onChanged: (v) async {
-                await GeofenceService.save(
-                  enabled: true,
-                  lat: _fenceLat,
-                  lng: _fenceLng,
-                  radiusM: _fenceRadius,
-                  alertMove: _fenceMove,
-                  alertEnterExit: v,
-                );
-                setState(() => _fenceEnterExit = v);
-              },
-            ),
-            SwitchListTile(
-              dense: true,
-              value: _fenceMove,
-              title: const Text('异常移动提醒（≥400m）'),
-              onChanged: (v) async {
-                await GeofenceService.save(
-                  enabled: true,
-                  lat: _fenceLat,
-                  lng: _fenceLng,
-                  radiusM: _fenceRadius,
-                  alertMove: v,
-                  alertEnterExit: _fenceEnterExit,
-                );
-                setState(() => _fenceMove = v);
-              },
-            ),
-          ],
-
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
+              if (_fenceEnabled) ...[
+                ListTile(
+                  dense: true,
+                  title: const Text('围栏中心', style: TextStyle(fontSize: 13)),
+                  subtitle: Text(
+                    _fenceLat == null
+                        ? '未设置（用当前车辆坐标）'
+                        : '${_fenceLat!.toStringAsFixed(5)}, ${_fenceLng!.toStringAsFixed(5)}',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  trailing: TextButton(
+                    onPressed: _setFenceFromCurrentCar,
+                    child: const Text('用车辆位置'),
+                  ),
+                ),
+                ListTile(
+                  dense: true,
+                  title: Row(
+                    children: [
+                      const Text('半径', style: TextStyle(fontSize: 13)),
+                      const Spacer(),
+                      Text(
+                        '${_fenceRadius.round()} m',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                  subtitle: Slider(
+                    value: _fenceRadius,
+                    min: 50,
+                    max: 1000,
+                    divisions: 19,
+                    onChanged: (v) => setState(() => _fenceRadius = v),
+                    onChangeEnd: (v) async {
+                      await GeofenceService.save(
+                        enabled: true,
+                        lat: _fenceLat,
+                        lng: _fenceLng,
+                        radiusM: v,
+                        alertMove: _fenceMove,
+                        alertEnterExit: _fenceEnterExit,
+                      );
+                    },
+                  ),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  value: _fenceEnterExit,
+                  title: const Text('进出围栏时提醒'),
+                  onChanged: (v) async {
+                    await GeofenceService.save(
+                      enabled: true,
+                      lat: _fenceLat,
+                      lng: _fenceLng,
+                      radiusM: _fenceRadius,
+                      alertMove: _fenceMove,
+                      alertEnterExit: v,
+                    );
+                    setState(() => _fenceEnterExit = v);
+                  },
+                ),
+                SwitchListTile(
+                  dense: true,
+                  value: _fenceMove,
+                  title: const Text('异常移动提醒（≥400m）'),
+                  onChanged: (v) async {
+                    await GeofenceService.save(
+                      enabled: true,
+                      lat: _fenceLat,
+                      lng: _fenceLng,
+                      radiusM: _fenceRadius,
+                      alertMove: v,
+                      alertEnterExit: _fenceEnterExit,
+                    );
+                    setState(() => _fenceMove = v);
+                  },
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.build_outlined,
             title: '保养提醒',
             subtitle: _maintEnabled ? '已开启' : '已关闭',
             children: [
-          ListTile(
-            leading: const Icon(Icons.build_outlined),
-            title: const Text('保养提醒'),
-            subtitle: Text(
-              _maintEnabled
-                  ? '每 ${_maintIntervalKm >= 1000 ? '${_maintIntervalKm ~/ 1000}k' : '$_maintIntervalKm'} km'
-                      '${maintNext != null ? ' · 下次约 $maintNext km' : ''}'
-                  : '已关闭',
-              style: const TextStyle(fontSize: 12),
-            ),
-            trailing: Switch(
-              value: _maintEnabled,
-              onChanged: (v) async {
-                final p = await SharedPreferences.getInstance();
-                await p.setBool('mymg.maint.enabled', v);
-                setState(() => _maintEnabled = v);
-              },
-            ),
+              ListTile(
+                leading: const Icon(Icons.build_outlined),
+                title: const Text('保养提醒'),
+                subtitle: Text(
+                  _maintEnabled
+                      ? '每 ${_maintIntervalKm >= 1000 ? '${_maintIntervalKm ~/ 1000}k' : '$_maintIntervalKm'} km'
+                            '${maintNext != null ? ' · 下次约 $maintNext km' : ''}'
+                      : '已关闭',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                trailing: Switch(
+                  value: _maintEnabled,
+                  onChanged: (v) async {
+                    final p = await SharedPreferences.getInstance();
+                    await p.setBool('mymg.maint.enabled', v);
+                    setState(() => _maintEnabled = v);
+                  },
+                ),
+              ),
+              if (_maintEnabled)
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.tune, size: 20),
+                  title: const Text('间隔 / 上次提醒里程'),
+                  trailing: const Icon(Icons.chevron_right, size: 18),
+                  onTap: _pickMaintSettings,
+                ),
+            ],
           ),
-          if (_maintEnabled)
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.tune, size: 20),
-              title: const Text('间隔 / 上次提醒里程'),
-              trailing: const Icon(Icons.chevron_right, size: 18),
-              onTap: _pickMaintSettings,
-            ),
-
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.schedule_outlined,
             title: '后台轮询',
             subtitle: _bgEnabled ? '已开启' : '已关闭',
             children: [
-          SwitchListTile(
-            value: _bgEnabled,
-            onChanged: _setBgEnabled,
-            title: const Text('App 关闭时拉车况'),
-            subtitle: Text(
-              _bgLastRunMs == null
-                  ? '尚无运行记录'
-                  : '上次：${_fmtFull(_bgLastRunMs!)}',
-              style: const TextStyle(fontSize: 12),
-            ),
+              SwitchListTile(
+                value: _bgEnabled,
+                onChanged: _setBgEnabled,
+                title: const Text('App 关闭时拉车况'),
+                subtitle: Text(
+                  _bgLastRunMs == null
+                      ? '尚无运行记录'
+                      : '上次：${_fmtFull(_bgLastRunMs!)}',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              if (_bgLastError != null && _bgLastError!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Text(
+                    _bgLastError!,
+                    style: const TextStyle(fontSize: 12, color: Colors.red),
+                  ),
+                ),
+            ],
           ),
-          if (_bgLastError != null && _bgLastError!.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Text(_bgLastError!,
-                  style: const TextStyle(fontSize: 12, color: Colors.red)),
-            ),
-
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.widgets_outlined,
             title: '桌面小组件',
             subtitle: '图片 · 透明度 · 刷新',
             children: [
-          ListTile(
-            leading: const Icon(Icons.directions_car_outlined),
-            title: const Text('小组件车辆图片'),
-            subtitle: const Text('仅小组件使用 · 支持 PNG 透明底'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _pickWidgetImage(context, kind: 'car'),
+              ListTile(
+                leading: const Icon(Icons.directions_car_outlined),
+                title: const Text('小组件车辆图片'),
+                subtitle: const Text('首页与小组件共用 · 支持 PNG 透明底'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _pickWidgetImage(context, kind: 'car'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.wallpaper_outlined),
+                title: const Text('小组件背景图片'),
+                subtitle: const Text('按钮和信息悬浮于背景之上'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _pickWidgetImage(context, kind: 'bg'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.opacity_outlined),
+                title: const Text('背景透明度'),
+                subtitle: Slider(
+                  value: (_widgetBgAlpha / 255).clamp(0.0, 1.0),
+                  min: 0,
+                  max: 1,
+                  divisions: 25,
+                  label: '${(_widgetBgAlpha / 255 * 100).round()}%',
+                  onChanged: (v) {
+                    setState(() => _widgetBgAlpha = (v * 255).round());
+                  },
+                  onChangeEnd: (v) async {
+                    await WidgetSync.setWidgetBgAlpha((v * 255).round());
+                  },
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.refresh),
+                title: const Text('刷新桌面小组件'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  final ok = await WidgetSync.refresh();
+                  if (!mounted) return;
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(ok ? '已请求刷新小组件' : '刷新失败，请先在桌面添加 MYMG 小组件'),
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
-          ListTile(
-            leading: const Icon(Icons.wallpaper_outlined),
-            title: const Text('小组件背景图片'),
-            subtitle: const Text('按钮和信息悬浮于背景之上'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _pickWidgetImage(context, kind: 'bg'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.opacity_outlined),
-            title: const Text('背景透明度'),
-            subtitle: Slider(
-              value: (_widgetBgAlpha / 255).clamp(0.0, 1.0),
-              min: 0,
-              max: 1,
-              divisions: 25,
-              label: '${(_widgetBgAlpha / 255 * 100).round()}%',
-              onChanged: (v) {
-                setState(() => _widgetBgAlpha = (v * 255).round());
-              },
-              onChangeEnd: (v) async {
-                await WidgetSync.setWidgetBgAlpha((v * 255).round());
-              },
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.refresh),
-            title: const Text('刷新桌面小组件'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () async {
-              final messenger = ScaffoldMessenger.of(context);
-              final ok = await WidgetSync.refresh();
-              if (!mounted) return;
-              messenger.showSnackBar(
-                SnackBar(content: Text(ok ? '已请求刷新小组件' : '刷新失败，请先在桌面添加 MYMG 小组件')),
-              );
-            },
-          ),
-
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.storage_outlined,
             title: '本机数据',
             subtitle: _count == null ? '读取中…' : '$_count 个数据点',
             children: [
-          ListTile(
-            leading: const Icon(Icons.storage_outlined),
-            title: Text(_count == null ? '正在读取…' : '共 $_count 个数据点'),
-            subtitle: Text(rangeText, style: const TextStyle(fontSize: 12)),
+              ListTile(
+                leading: const Icon(Icons.storage_outlined),
+                title: Text(_count == null ? '正在读取…' : '共 $_count 个数据点'),
+                subtitle: Text(rangeText, style: const TextStyle(fontSize: 12)),
+              ),
+              ListTile(
+                leading: const Icon(Icons.cleaning_services_outlined),
+                title: const Text('清理 30 天前'),
+                onTap: _cleanOld,
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Colors.red),
+                title: const Text(
+                  '清空全部快照',
+                  style: TextStyle(color: Colors.red),
+                ),
+                onTap: _deleteAll,
+              ),
+            ],
           ),
-          ListTile(
-            leading: const Icon(Icons.cleaning_services_outlined),
-            title: const Text('清理 30 天前'),
-            onTap: _cleanOld,
-          ),
-          ListTile(
-            leading: const Icon(Icons.delete_outline, color: Colors.red),
-            title: const Text('清空全部快照', style: TextStyle(color: Colors.red)),
-            onTap: _deleteAll,
-          ),
-
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
-          _collapsible(
+          const SizedBox(height: 8),
+          SettingsEntryRow(
             icon: Icons.info_outline,
             title: '关于',
-            subtitle: '版本 · 本车档案 · 功能一览',
-            children: [
-          ListTile(
-            leading: const Icon(Icons.info_outline),
-            title: const Text('MYMG · 车况与智能控车'),
-            subtitle: const Text(
-              '自建上汽车联客户端\nFlutter UI + Rust 核心 · 油箱按 45L 估算油耗\n'
-              '云端告警来自 getVehicleStatus.vehicle_alerts',
-              style: TextStyle(fontSize: 12, height: 1.45),
-            ),
+            subtitle: const Text('版本 · 使用说明 · 隐私与开源许可'),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+              builder: (_) => const AboutPage(),
+            )),
           ),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.directions_car_outlined),
-            title: const Text('本车档案'),
-            subtitle: Text(
-              [
-                if (_plate.isNotEmpty) _plate,
-                _mask(widget.vin, 6, 4),
-                '燃油 · 45L',
-              ].join(' · '),
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.route_outlined),
-            title: const Text('功能一览'),
-            subtitle: const Text(
-              '实时车况 · 历史曲线 · AI 解读 · 智能控车 · 围栏 · 消息中心 · CSV 导出',
-              style: TextStyle(fontSize: 12),
-            ),
-          ),
-
-          ]),
-          const Divider(height: 1, indent: 16, endIndent: 16),
+          const SizedBox(height: 8),
           _collapsible(
             icon: Icons.logout,
             title: '账户',
             children: [
-          ListTile(
-            leading: const Icon(Icons.logout, color: Colors.red),
-            title: const Text('退出登录 / 重新登录', style: TextStyle(color: Colors.red)),
-            onTap: () async {
-              final ok = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('退出登录？'),
-                  content: const Text('清除本机 token / VIN，回到登录页。'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-                    FilledButton(
-                      onPressed: () => Navigator.pop(ctx, true),
-                      child: const Text('退出', style: TextStyle(color: Colors.red)),
-                    ),
-                  ],
+              ListTile(
+                leading: const Icon(Icons.logout, color: Colors.red),
+                title: const Text(
+                  '退出登录 / 重新登录',
+                  style: TextStyle(color: Colors.red),
                 ),
-              );
-              if (ok != true || !mounted) return;
-              await TokenAge.clear();
-              final p = await SharedPreferences.getInstance();
-              await p.remove('mymg.vin');
-              if (!mounted) return;
-              Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const LoginPage()),
-                (_) => false,
-              );
-            },
+                onTap: () async {
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('退出登录？'),
+                      content: const Text('清除本机 token / VIN，回到登录页。'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('取消'),
+                        ),
+                        FilledButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text(
+                            '退出',
+                            style: TextStyle(color: Colors.red),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok != true || !mounted) return;
+                  await TokenAge.clear();
+                  final p = await SharedPreferences.getInstance();
+                  await p.remove('mymg.vin');
+                  if (!mounted) return;
+                  Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+                    MaterialPageRoute(builder: (_) => const LoginPage()),
+                    (_) => false,
+                  );
+                },
+              ),
+            ],
           ),
-          ]),
           const SizedBox(height: 24),
         ],
       ),
@@ -1252,18 +1382,15 @@ class _SettingsPageState extends State<SettingsPage>
     required List<Widget> children,
   }) {
     _pageBodies[title] = children;
-    final sub = subtitleWidget ??
+    final sub =
+        subtitleWidget ??
         ((subtitle == null || subtitle.isEmpty)
             ? null
             : Text(subtitle, style: const TextStyle(fontSize: 12)));
-    return ListTile(
-      leading: Icon(icon, size: 22),
-      title: Text(
-        title,
-        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-      ),
+    return SettingsEntryRow(
+      icon: icon,
+      title: title,
       subtitle: sub,
-      trailing: const Icon(Icons.chevron_right),
       onTap: () => Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => _SectionPage(

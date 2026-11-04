@@ -12,12 +12,49 @@ class AppConfig {
   static const String tokenSuffix = String.fromEnvironment('MYMG_TOKEN_SUFFIX');
 
   /// 官方 App 包名（仅用于「打开官方 App」跳转；未配置则按钮无效）
-  static const String officialAppPackage =
-      String.fromEnvironment('MYMG_OFFICIAL_PKG');
+  static const String officialAppPackage = String.fromEnvironment(
+    'MYMG_OFFICIAL_PKG',
+  );
 
   /// 数字钥匙 GATT 服务 UUID（自填；开源版不内置厂商值）
-  static const String bleServiceUuid =
-      String.fromEnvironment('MYMG_BLE_SERVICE_UUID');
+  static const String bleServiceUuid = String.fromEnvironment(
+    'MYMG_BLE_SERVICE_UUID',
+  );
+
+  /// Only configure an authorized GCJ-02 XYZ source; vehicle WGS84 is converted.
+  static const String mapTileUrl = String.fromEnvironment('MYMG_MAP_TILE_URL');
+  static const String mapAttribution = String.fromEnvironment(
+    'MYMG_MAP_ATTRIBUTION',
+  );
+  static List<String> get mapSubdomains =>
+      const String.fromEnvironment('MYMG_MAP_SUBDOMAINS')
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+
+  /// Public geocoding sends coordinates to third parties; opt in explicitly.
+  static const bool enablePublicGeocoding = bool.fromEnvironment(
+    'MYMG_ENABLE_PUBLIC_GEOCODING',
+  );
+
+  static bool get mapTilesConfigured =>
+      isUsableTileSource(mapTileUrl, mapAttribution);
+
+  static bool isUsableTileSource(String template, String attribution) {
+    if (attribution.trim().isEmpty ||
+        !['{z}', '{x}', '{y}'].every(template.contains)) {
+      return false;
+    }
+    final uri = Uri.tryParse(
+      template
+          .replaceAll('{z}', '0')
+          .replaceAll('{x}', '0')
+          .replaceAll('{y}', '0')
+          .replaceAll('{s}', 'a'),
+    );
+    return uri != null && uri.scheme == 'https' && uri.host.isNotEmpty;
+  }
 
   /// 令牌是否「看起来可用」：未配置后缀时不校验。
   static bool looksLikeAccessToken(String t) =>

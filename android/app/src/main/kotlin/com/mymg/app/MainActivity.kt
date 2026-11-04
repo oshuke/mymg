@@ -96,8 +96,33 @@ class MainActivity : FlutterFragmentActivity() {
         super.onCreate(savedInstanceState)
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        BlePermissionController.onResult(this, requestCode, grantResults)
+    }
+
+    override fun onDestroy() {
+        BlePermissionController.detach(this)
+        super.onDestroy()
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MymgAppInfo.bind(flutterEngine, applicationContext)
+
+        // Background the task without finishing the activity or BLE service.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mymg/navigation")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "moveToBackground") {
+                    result.success(moveTaskToBack(true))
+                } else {
+                    result.notImplemented()
+                }
+            }
 
 // 调试通道：Android ID / 机型信息 / 启动官方 App
         MethodChannel(
@@ -274,31 +299,19 @@ result.success(false) // 未安装 / 不可见
         MymgBleKeyClient.bind(bleChannel, applicationContext)
         bleChannel.setMethodCallHandler { call, result ->
             when (call.method) {
-                "requestPermissions" -> {
-                    if (android.os.Build.VERSION.SDK_INT >= 31) {
-                        requestPermissions(
-                            arrayOf(
-                                "android.permission.BLUETOOTH_SCAN",
-                                "android.permission.BLUETOOTH_CONNECT",
-                                "android.permission.ACCESS_FINE_LOCATION",
-                            ),
-                            4321,
-                        )
-                    } else {
-                        requestPermissions(
-                            arrayOf(
-                                "android.permission.ACCESS_FINE_LOCATION",
-                                "android.permission.ACCESS_COARSE_LOCATION",
-                            ),
-                            4321,
-                        )
-                    }
-                    result.success(true)
-                }
+                "requestPermissions" -> BlePermissionController.request(this, result)
+                "openAppSettings" -> BlePermissionController.openAppSettings(this, result)
                 "startScan", "stopScan", "hasScanPermission", "isSupported" ->
                     MymgBleScanner.handle(call, result)
                 "calculateServiceUuid", "formatBookingId", "fixedServiceUuid", "probe", "unlock", "lock", "drive", "trunk", "liftgateOpen", "liftgateClose", "liftgate_open", "liftgate_close", "disconnect", "isConnected", "cachedMaterial", "setAutoDriveAfterUnlock" ->
-                    MymgBleKeyClient.handle(call, result)
+                    if (call.method in setOf(
+                            "probe", "unlock", "lock", "drive", "trunk",
+                            "liftgateOpen", "liftgateClose", "liftgate_open", "liftgate_close",
+                        ) && !BlePermissionController.hasPermissions(this)) {
+                        result.error("PERM", "蓝牙权限未授予，请打开应用设置授权后重试", null)
+                    } else {
+                        MymgBleKeyClient.handle(call, result)
+                    }
                 else -> result.notImplemented()
             }
         }

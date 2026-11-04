@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
 import 'theme_controller.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:mymg/src/rust/vehicle/summary.dart';
@@ -13,7 +15,8 @@ import 'ai_widgets.dart';
 import 'alert_rules.dart';
 import 'background.dart';
 import 'backup_service.dart';
-import 'coord.dart';
+import 'car_image_settings_page.dart';
+import 'climate_page.dart';
 import 'err_util.dart';
 import 'geocode_service.dart';
 import 'history_page.dart';
@@ -28,6 +31,9 @@ import 'shortcut_router.dart';
 import 'store.dart';
 import 'summary_cache.dart';
 import 'ui_motion.dart';
+import 'ui/home_dashboard.dart';
+import 'ui/glass_surface.dart';
+import 'vehicle_status_page.dart';
 import 'vehicle_profile.dart';
 import 'widget_sync.dart';
 
@@ -40,9 +46,17 @@ String alertKeyOf(VehicleAlert a) =>
 
 /// 主页：调用 Rust 拉取车况摘要，按卡分组展示
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.token, required this.vin});
+  const HomePage({
+    super.key,
+    required this.token,
+    required this.vin,
+    this.onNavigate,
+    this.active = true,
+  });
   final String token;
   final String vin;
+  final ValueChanged<int>? onNavigate;
+  final bool active;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -53,20 +67,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String? _error;
   bool _loading = false;
   DateTime? _updatedAt;
-  int? _snapshotCount;   // 本机 SQLite 已存的快照数（首屏读一次）
-  Set<String> _ignoredAlerts = <String>{};  // 用户手动忽略的告警
+  int? _snapshotCount; // 本机 SQLite 已存的快照数（首屏读一次）
+  Set<String> _ignoredAlerts = <String>{}; // 用户手动忽略的告警
 
   // ── AI 智能总结（最新在前，本机最多 10 条） ──
   /// 首条 = 最新一条 = 首页 AI 卡的主展示内容；其余 = "最近总结"列表。
   List<AiReport> _aiHistory = const [];
   bool _aiRunning = false;
+
   /// 自动跑的去抖定时器（数据就绪后稍等 UI 稳定再调大模型）
   Timer? _aiAutoDebounce;
+
   /// 冷启动自动 AI 的结果提示（无变化时告诉用户为何没新总结）
   String? _aiAutoNote;
 
   /// 车牌号（本机手填，设置页维护；接口不返回）
   String _plate = '';
+
   /// 入场动画只播一次，避免每次刷新/生命周期触发卡片重放
   bool _entrancePlayed = false;
 
@@ -98,6 +115,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _loadMaintState();
     WidgetsBinding.instance.addObserver(this);
     _bindShortcuts();
+  }
+
+  @override
+  void didUpdateWidget(covariant HomePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.active && widget.active) {
+      unawaited(_loadAutoRefresh());
+      unawaited(_loadSnapshotCount());
+      unawaited(_loadPlate());
+      unawaited(_loadMaintState());
+    }
   }
 
   Future<void> _loadMaintState() async {
@@ -155,19 +183,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _openHistory() {
     Navigator.of(context).push(
-      FadeSlidePageRoute(page: HistoryPage(token: widget.token, vin: widget.vin)),
+      FadeSlidePageRoute(
+        page: HistoryPage(token: widget.token, vin: widget.vin),
+      ),
     );
   }
 
   void _openMap() {
     Navigator.of(context).push(
-      FadeSlidePageRoute(page: MapPage(token: widget.token, vin: widget.vin)),
+      FadeSlidePageRoute(
+        page: MapPage(token: widget.token, vin: widget.vin),
+      ),
     );
   }
 
   /// 快捷控车弹窗（与控制中心磁贴一致）
-  void _openQuickControlSheet() {
-    unawaited(showQuickControlSheet(context));
+  void _openQuickControlSheet({String? initialAction}) {
+    unawaited(showQuickControlSheet(context, initialAction: initialAction));
   }
 
   @override
@@ -251,9 +283,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await p.remove(_kIgnoredAlertsKey);
     if (mounted) {
       setState(() => _ignoredAlerts = <String>{});
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已恢复全部告警显示')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('已恢复全部告警显示')));
     }
   }
 
@@ -307,7 +338,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
       if (!mounted) return;
       final prev = _summary;
-      final changed = prev == null ||
+      final changed =
+          prev == null ||
           prev.fuelPercent != s.fuelPercent ||
           prev.rangeKm != s.rangeKm ||
           prev.odometerKm != s.odometerKm ||
@@ -408,19 +440,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  /// 打开官方 App 的「爱车 / 控车」页面（首页「控车」按钮）。
-  ///
-  /// **跳转策略（2026-09-10 通过在小米15上实测修正）**：
-  /// 真正的控车主页面（车牌 / 24℃ / 后备箱 / 上锁 / 解锁 / 寻车 / 空调...）是
-  /// `com.zone.tsp.saic.ui.VehicleMixedActivity`，**但它在 manifest 中
-  /// `exported=false` 且没有 intent-filter**，外部 app 没办法直接 setComponent 拉起。
-  /// 同理 MainActivity、VehicleHomeActivity 也都是 `exported=false`。
-  /// 唯一可行的路径：**走 launcher intent**，让官方 App 自己 splash → main → home
-  /// → mixed 跳到控车主页，大约 5~7 秒后到达。
-  ///
-  /// 返回值（由原生 `openControl` 桥方法给出）：
-  ///   * `"launcher"` — 已拉起官方 App，约 5~7 秒后到达控车主页。提示一次。
-  ///   * `false`      — 未安装官方 App。提示一次。
   /// 异步读取 SQLite 已存快照数
   Future<void> _loadSnapshotCount() async {
     try {
@@ -451,8 +470,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }) async {
     try {
       final from = DateTime.now().subtract(since).millisecondsSinceEpoch;
-      return await SnapshotStore.instance
-          .listByRange(vin: widget.vin, fromMs: from, limit: 2000);
+      return await SnapshotStore.instance.listByRange(
+        vin: widget.vin,
+        fromMs: from,
+        limit: 2000,
+      );
     } catch (_) {
       return const <SnapshotRow>[];
     }
@@ -529,9 +551,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (!mounted) return;
         setState(() => _aiRunning = false);
         if (!auto) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('所选时段内没有历史快照')),
-          );
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('所选时段内没有历史快照')));
         }
         return;
       }
@@ -590,19 +611,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _aiAutoNote = outcome.saved
               ? '已自动总结'
               : outcome.skippedReasonLabel.isEmpty
-                  ? null
-                  : outcome.skippedReasonLabel;
+              ? null
+              : outcome.skippedReasonLabel;
         }
       });
       if (!auto && mounted) {
         final msg = outcome.saved
             ? 'AI 智能总结已更新（近 ${since.inHours < 24 ? '${since.inHours} 小时' : '${since.inDays} 天'}）'
             : outcome.skippedReasonLabel.isEmpty
-                ? 'AI 总结未保存'
-                : outcome.skippedReasonLabel;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(msg)),
-        );
+            ? 'AI 总结未保存'
+            : outcome.skippedReasonLabel;
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
       }
     } on AiException catch (e) {
       if (!mounted) return;
@@ -616,9 +636,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (auto) _aiAutoNote = label;
       });
       if (!auto) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('AI 总结失败：$label')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('AI 总结失败：$label')));
       }
     } catch (e) {
       if (!mounted) return;
@@ -627,9 +646,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (auto) _aiAutoNote = 'AI 总结失败，请检查网络或 AI 设置';
       });
       if (!auto) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('AI 总结失败：$e')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('AI 总结失败：$e')));
       }
     }
   }
@@ -640,15 +658,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final p = await SharedPreferences.getInstance();
     final on = p.getBool('mymg.maint.enabled') ?? true;
     if (!on) return;
-    final interval = (p.getInt('mymg.maint.interval_km') ?? 5000).clamp(1000, 50000);
+    final interval = (p.getInt('mymg.maint.interval_km') ?? 5000).clamp(
+      1000,
+      50000,
+    );
     final last = p.getInt('mymg.maint.last_notified_km') ?? 0;
     final cur = odometerKm.floor();
     if (cur < last + interval) return;
-    final msg =
-        '总里程已达 ${cur}km，距上次提醒约 ${cur - last}km，建议检查机油/滤芯等常规保养项目。';
+    final msg = '总里程已达 ${cur}km，距上次提醒约 ${cur - last}km，建议检查机油/滤芯等常规保养项目。';
     await p.setInt('mymg.maint.last_notified_km', cur);
     await p.setString('mymg.maint.last_msg', msg);
-    await p.setInt('mymg.maint.last_msg_at', DateTime.now().millisecondsSinceEpoch);
+    await p.setInt(
+      'mymg.maint.last_msg_at',
+      DateTime.now().millisecondsSinceEpoch,
+    );
     setState(() {
       _maintLastMsg = msg;
       _maintLastKm = cur;
@@ -667,25 +690,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _openRelogin() async {
-    await Navigator.of(context).push(
-      FadeSlidePageRoute(page: const LoginPage()),
-    );
+    await Navigator.of(
+      context,
+      rootNavigator: true,
+    ).pushReplacement(FadeSlidePageRoute(page: const LoginPage()));
   }
 
   /// AI 解读服务端私有告警码（Day 7）
   Future<void> _openAiExplainAlerts() async {
     final s = _summary;
     if (s == null || (s.alerts ?? const []).isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('当前没有告警可解读')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('当前没有告警可解读')));
       return;
     }
     await showAiReport(
       context,
       title: 'AI 告警解读',
-      run: (onDelta) =>
-          AiService.instance.explainAlerts(s, vin: widget.vin, onDelta: onDelta),
+      run: (onDelta) => AiService.instance.explainAlerts(
+        s,
+        vin: widget.vin,
+        onDelta: onDelta,
+      ),
       onOpenSettings: _openSettings,
     );
   }
@@ -694,718 +720,118 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final s = _summary;
     return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          _plate.isNotEmpty
-              ? _plate
-              : VehicleProfile.primaryLabel(plate: _plate, vin: widget.vin),
-          style: const TextStyle(letterSpacing: 0.3, fontWeight: FontWeight.w700),
-        ),
-        actions: [
-          IconButton(
-            tooltip: '消息中心',
-            icon: const Icon(Icons.notifications_none_outlined),
-            onPressed: () {
-              Navigator.of(context).push(
-                FadeSlidePageRoute(
-                  page: MessageCenterPage(
-                    token: widget.token,
-                    vin: widget.vin,
-                  ),
-                ),
-              );
-            },
-          ),
-          IconButton(
-            tooltip: '设置',
-            icon: Icon(Icons.settings_outlined),
-            onPressed: _openSettings,
-          ),
-        ],
-        titleSpacing: 8,
-      ),
-      body: RefreshIndicator(
+      backgroundColor: Colors.transparent,
+      body: HomeDashboard(
+        summary: s,
+        plate: _plate,
+        address: _geoLabel,
+        lastSynced: _updatedAt,
+        loading: _loading,
         onRefresh: _refresh,
-        color: Theme.of(context).colorScheme.primary,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
-          children: [
-            if (_loading && s == null)
-              Padding(
-                padding: const EdgeInsets.all(40),
-                child: Center(
-                  child: BrandPulse(
-                    child: CircularProgressIndicator(
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
-                ),
-              )
-            else if (_error != null && s == null)
-              StaggeredAppear(
-                index: 0,
-                child: _ErrorCard(
-                  error: _error!,
-                  onRetry: _refresh,
-                  onRelogin: _openRelogin,
-                ),
-              )
-            else if (s != null) ...[
-              // ① 能耗 Hero：油量 / 续航 / 里程 / 油耗 + 数据新鲜度
-              RepaintBoundary(
-                child: StaggeredAppear(
-                  index: 0,
-                  animate: !_entrancePlayed,
-                  child: _FuelCard(
-                    fuelPercent: s.fuelPercent,
-                    rangeKm: s.rangeKm,
-                    odometerKm: s.odometerKm,
-                    fuelConsumption: s.fuelConsumption,
-                    serverTimeMs: s.updateTime?.toInt(),
-                    localFetchedAt: _updatedAt,
-                    acOn: s.acOn,
-                    acTemp: s.acTargetTemp?.toInt(),
-                    interior: s.interiorTemp,
-                    exterior: s.exteriorTemp,
-                  ),
-                ),
+        onMessages: () => Navigator.of(context).push(
+          FadeSlidePageRoute(
+            page: MessageCenterPage(token: widget.token, vin: widget.vin),
+          ),
+        ),
+        onSettings: _openSettings,
+        onImage: () => Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const CarImageSettingsPage())),
+        onLock: () => _openQuickControlSheet(initialAction: 'lock'),
+        onClimate: _openClimate,
+        onTrunk: () => _openQuickControlSheet(initialAction: 'trunk'),
+        onFind: () => _openQuickControlSheet(initialAction: 'find'),
+        onStatus: () {
+          if (widget.onNavigate != null) {
+            widget.onNavigate!(2);
+          } else {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) =>
+                    VehicleStatusPage(token: widget.token, vin: widget.vin),
               ),
-              const SizedBox(height: 12),
-              // ② 安全状态 + 告警：开门/开窗/未锁优先扫一眼
-              StaggeredAppear(
-                index: 1,
-                animate: !_entrancePlayed,
-                child: _SafetyStatusCard(
-                  summary: s,
-                  alerts: s.alerts,
-                  ignoredKeys: _ignoredAlerts,
-                  onIgnore: _ignoreAlert,
-                  onRestore: _restoreAlerts,
-                  onAiExplain: _openAiExplainAlerts,
-                  onOpenMessages: () {
-                    Navigator.of(context).push(
-                      FadeSlidePageRoute(
-                        page: MessageCenterPage(
-                          token: widget.token,
-                          vin: widget.vin,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 12),
-              // ③ 胎压
-              StaggeredAppear(
-                index: 2,
-                animate: !_entrancePlayed,
-                child: _TyreCard(summary: s),
-              ),
-              const SizedBox(height: 12),
-              // ④ 位置
-              StaggeredAppear(
-                index: 4,
-                animate: !_entrancePlayed,
-                child: _LocationCard(
-                  lat: s.latitude,
-                  lng: s.longitude,
-                  updateTime: s.updateTime,
-                  journey: s.journeyKm,
-                  lastRefresh: _updatedAt,
-                  token: widget.token,
-                  vin: widget.vin,
-                  address: _geoLabel,
-                  geoLoading: _geoLoading,
-                ),
-              ),
-              const SizedBox(height: 12),
-              // ⑤ AI 车况解读（折叠预览）
-              StaggeredAppear(
-                index: 3,
-                animate: !_entrancePlayed,
-                child: _AiSummaryCard(
-                  aiHistory: _aiHistory,
-                  autoNote: _aiAutoNote,
-                  aiRunning: _aiRunning,
-                  onOpenHistory: _openHistory,
-                  onOpenSettings: _openSettings,
-                ),
-              ),
-              const SizedBox(height: 12),
-              // ⑥ 保养
-              StaggeredAppear(
-                index: 5,
-                animate: !_entrancePlayed,
-                child: _MaintCard(
-                  odometerKm: s.odometerKm,
-                  lastKm: _maintLastKm,
-                  lastMsg: _maintLastMsg,
-                ),
-              ),
-            ],
-            if (_error != null && s != null) ...[
-              const SizedBox(height: 8),
-              _ErrorCard(
+            );
+          }
+        },
+        onLocation: () {
+          if (widget.onNavigate != null) {
+            widget.onNavigate!(3);
+          } else {
+            _openMap();
+          }
+        },
+        onHistory: _openHistory,
+        error: _error == null
+            ? null
+            : _ErrorCard(
                 error: _error!,
                 onRetry: _refresh,
                 onRelogin: _openRelogin,
               ),
-            ],
-          ],
-        ),
-      ),
-      floatingActionButton: AnimatedSlide(
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-        offset: _loading ? const Offset(0, 1.2) : Offset.zero,
-        child: AnimatedOpacity(
-          duration: const Duration(milliseconds: 200),
-          opacity: _loading ? 0 : 1,
-          child: IgnorePointer(
-            ignoring: _loading,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                // 刷新与下拉重复，只保留控车入口
-                FloatingActionButton.extended(
-                  heroTag: 'control_car',
-                  tooltip: '智能控车',
-                  onPressed: _openQuickControlSheet,
-                  icon: const Icon(Icons.settings_remote, size: 20),
-                  label: const Text('控车'),
+        details: s == null
+            ? null
+            : GlassSurface(
+                padding: EdgeInsets.zero,
+                child: ExpansionTile(
+                  title: const Text(
+                    '更多车况与提醒',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                  ),
+                  subtitle: const Text(
+                    '详细告警、AI 解读与保养',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  childrenPadding: const EdgeInsets.all(12),
+                  children: [
+                    _SafetyStatusCard(
+                      summary: s,
+                      alerts: s.alerts,
+                      ignoredKeys: _ignoredAlerts,
+                      onIgnore: _ignoreAlert,
+                      onRestore: _restoreAlerts,
+                      onAiExplain: _openAiExplainAlerts,
+                      onOpenMessages: () => Navigator.of(context).push(
+                        FadeSlidePageRoute(
+                          page: MessageCenterPage(
+                            token: widget.token,
+                            vin: widget.vin,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _TyreCard(summary: s),
+                    const SizedBox(height: 12),
+                    _AiSummaryCard(
+                      aiHistory: _aiHistory,
+                      autoNote: _aiAutoNote,
+                      aiRunning: _aiRunning,
+                      onOpenHistory: _openHistory,
+                      onOpenSettings: _openSettings,
+                    ),
+                    const SizedBox(height: 12),
+                    _MaintCard(
+                      odometerKm: s.odometerKm,
+                      lastKm: _maintLastKm,
+                      lastMsg: _maintLastMsg,
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-        ),
+              ),
+      ),
+    );
+  }
+
+  void _openClimate() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ClimatePage(token: widget.token, vin: widget.vin),
       ),
     );
   }
 }
 
 // ── 卡片们 ───────────────────────────────────────────────────────────
-
-class _FuelCard extends StatelessWidget {
-  const _FuelCard({
-    this.fuelPercent,
-    this.rangeKm,
-    this.odometerKm,
-    this.fuelConsumption,
-    this.serverTimeMs,
-    this.localFetchedAt,
-    this.acOn,
-    this.acTemp,
-    this.interior,
-    this.exterior,
-  });
-  final int? fuelPercent;
-  final int? rangeKm;
-  final double? odometerKm;
-  final double? fuelConsumption;
-  final int? serverTimeMs;
-  final DateTime? localFetchedAt;
-  final bool? acOn;
-  final int? acTemp;
-  final double? interior;
-  final double? exterior;
-
-  /// 右上角：车辆/TBOX 上传时间（server_time）；与本地拉取时间区分
-  String? get _serverTimeLabel {
-    final raw = serverTimeMs;
-    if (raw == null || raw <= 0) return null;
-    final ms = raw > 1000000000000 ? raw : raw * 1000;
-    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
-    if (dt.year < 2020 || dt.year > 2100) return null;
-    return '${dt.hour.toString().padLeft(2, '0')}:'
-        '${dt.minute.toString().padLeft(2, '0')}';
-  }
-
-  /// 本地拉取时间（App 拉到车况的时刻）
-  /// 指标行用的短里程：超过 1 万 km 用「万」避免截断
-  String get _fuelConsText {
-    final c = fuelConsumption;
-    if (c != null && c > 0) return '${c.toStringAsFixed(1)}L/100km';
-    // API no consumption: estimate from fuel% / range with 45L tank
-    final fuel = fuelPercent;
-    final range = rangeKm;
-    if (fuel != null && range != null && fuel > 0 && range > 30) {
-      final est = (fuel / 100.0 * 45.0) / range * 100.0;
-      return '${est.toStringAsFixed(1)}L/100km~';
-    }
-    return '—';
-  }
-
-  String get _odoShort {
-    final o = odometerKm;
-    if (o == null) return '—';
-    if (o >= 10000) {
-      return '${(o / 10000).toStringAsFixed(2)}万km';
-    }
-    return '${o.toStringAsFixed(0)}km';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final p = fuelPercent ?? 0;
-    final scheme = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: dark
-                ? const [Color(0xFF1A1F2E), Color(0xFF121214), Color(0xFF1E1A28)]
-                : [
-                    const Color(0xFFF7F5FF),
-                    scheme.surfaceContainerHighest.withOpacity(0.9),
-                  ],
-          ),
-        ),
-        child: Stack(
-          children: [
-            // 背景：车侧影线稿（居中、低透明度）
-            //   ① 放在 Stack 最底层、数据控件在上层 → 不遮挡数据
-            //   ② IgnorePointer → 不吃点击；ColorFiltered 按主题着色，浅色主题用深色线
-            Positioned.fill(
-              child: IgnorePointer(
-                child: Center(
-                  child: Opacity(
-                    opacity: dark ? 0.32 : 0.10,
-                    child: ColorFiltered(
-                      colorFilter: ColorFilter.mode(
-                        dark ? Colors.white : Colors.black,
-                        BlendMode.srcIn,
-                      ),
-                      child: Image.asset(
-                        'assets/car/home_status_bg.png',
-                        width: double.infinity,
-                        fit: BoxFit.contain,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: AppPalette.okBg,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.bolt, size: 12, color: AppPalette.ok),
-                        const SizedBox(width: 4),
-                        Text(
-                          '实时车况',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: AppPalette.ok,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  // 右上角：车辆/TBOX 上报到服务端的时间
-                  if (_serverTimeLabel != null)
-                    Text(
-                      '车辆上传 $_serverTimeLabel',
-                      style: TextStyle(fontSize: 11, color: AppPalette.subtle),
-                    ),
-                ],
-              ),
-              // 环境 / 空调条：Hero 卡内一眼可见
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 6,
-                children: [
-                  _miniChip(
-                    Icons.thermostat,
-                    interior == null
-                        ? '车内 —'
-                        : '车内 ${interior!.toStringAsFixed(0)}°C',
-                  ),
-                  _miniChip(
-                    Icons.wb_sunny_outlined,
-                    exterior == null
-                        ? '车外 —'
-                        : '车外 ${exterior!.toStringAsFixed(0)}°C',
-                  ),
-                  _miniChip(
-                    Icons.ac_unit,
-                    acOn == true
-                        ? '空调${acTemp != null ? ' $acTemp°C' : ' 开'}'
-                        : '空调 关',
-                    on: acOn == true,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '油量',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: AppPalette.muted,
-                          letterSpacing: 0.4,
-                        ),
-                      ),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          ValueFade(
-                            value: '$p',
-                            builder: (_, v) => Text(
-                              v,
-                              style: TextStyle(
-                                fontSize: 64,
-                                height: 0.95,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: -2,
-                                color: AppPalette.strong,
-                              ),
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8, left: 2),
-                            child: Text(
-                              '%',
-                              style: TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.w700,
-                                color: AppPalette.muted,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                  const Spacer(),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        '剩余续航',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: AppPalette.muted,
-                          letterSpacing: 0.4,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          ValueFade(
-                            value: rangeKm == null ? '—' : '$rangeKm',
-                            builder: (_, v) => Text(
-                              v,
-                              style: TextStyle(
-                                fontSize: 40,
-                                height: 0.95,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: -1,
-                                color: AppPalette.strong,
-                              ),
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 5, left: 3),
-                            child: Text(
-                              'km',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                                color: AppPalette.muted,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: LinearProgressIndicator(
-                  value: (p.clamp(0, 100)) / 100.0,
-                  minHeight: 8,
-                  backgroundColor: AppPalette.track,
-                  color: scheme.primary,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: _heroMetric('总里程', _odoShort),
-                  ),
-                  Container(width: 1, height: 22, color: AppPalette.track),
-                  Expanded(child: _heroMetric('油耗', _fuelConsText)),
-                ],
-              ),
-              // 车辆上传偏旧时的说明：App 只能拉服务端已缓存的数据
-            ],
-          ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _heroMetric(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: AppPalette.muted,
-              )),
-          const SizedBox(height: 3),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: Text(
-              value,
-              maxLines: 1,
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w800,
-                color: AppPalette.strong,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _miniChip(IconData icon, String text, {bool on = false}) {
-    final color = on ? AppPalette.ok : AppPalette.muted;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: (on ? AppPalette.ok : AppPalette.info).withOpacity(0.10),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(
-          color: (on ? AppPalette.ok : AppPalette.info).withOpacity(0.30),
-          width: 0.8,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 13, color: color),
-          const SizedBox(width: 4),
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 11.5,
-              fontWeight: on ? FontWeight.w700 : FontWeight.w500,
-              color: on ? AppPalette.ok : AppPalette.strong,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _LocationCard extends StatelessWidget {
-  const _LocationCard({
-    this.lat, this.lng, this.updateTime, this.journey, this.lastRefresh,
-    required this.token, required this.vin,
-    this.address, this.geoLoading = false,
-  });
-  final String? lat;
-  final String? lng;
-  final int? updateTime;
-  final double? journey;
-  final DateTime? lastRefresh;
-  final String token;
-  final String vin;
-  final String? address;
-  final bool geoLoading;
-
-  @override
-  Widget build(BuildContext context) {
-    String ts = '—';
-    final dt = _parseServerTs(updateTime);
-    if (dt != null) ts = dt.toLocal().toString().split('.').first;
-    final wgsLat = double.tryParse(lat ?? '');
-    final wgsLng = double.tryParse(lng ?? '');
-    final hasCoord = wgsLat != null && wgsLng != null;
-    // ★ 车联是 WGS-84；这里统一转成 GCJ-02 显示，与内嵌高德地图 / 手机高德一致
-    final gcj = hasCoord ? wgs84ToGcj02(wgsLat, wgsLng) : null;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const _Title('位置'),
-                const Spacer(),
-                if (hasCoord)
-                  TextButton.icon(
-                    onPressed: () {
-                      Navigator.of(context).push(
-                        FadeSlidePageRoute(
-                          page: MapPage(token: token, vin: vin),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.map_outlined, size: 18),
-                    label: const Text('查看完整地图'),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            // 位置预览条：可点击 → 进入 MapPage（Hero 飞入地图上的车标）
-            InkWell(
-              borderRadius: BorderRadius.circular(8),
-              onTap: hasCoord
-                  ? () {
-                      Navigator.of(context).push(
-                        FadeSlidePageRoute(
-                          page: MapPage(token: token, vin: vin),
-                        ),
-                      );
-                    }
-                  : null,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: Colors.green.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppPalette.ok.withValues(alpha: 0.45)),
-                ),
-                child: Row(
-                  children: [
-                    Hero(
-                      tag: 'map-car',
-                      child: Icon(Icons.place, color: AppPalette.ok, size: 22),
-                    ),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  hasCoord ? '车辆当前位置' : '暂无位置数据',
-                                  style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppPalette.strong),
-                                ),
-                              ),
-                              if (journey != null && journey! > 0)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: AppPalette.info.withOpacity(0.12),
-                                    borderRadius: BorderRadius.circular(999),
-                                  ),
-                                  child: Text(
-                                    '行程 ${journey!.toStringAsFixed(1)}km',
-                                    style: TextStyle(
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppPalette.info,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          if (hasCoord)
-                            Text(
-                              address ??
-                                  (geoLoading
-                                      ? '地址解析中…'
-                                      : '${gcj!.lat.toStringAsFixed(4)}, ${gcj.lng.toStringAsFixed(4)}'),
-                              style: TextStyle(
-                                fontSize: 12, color: AppPalette.muted,
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            )
-                          else
-                            Text('GPS 未定位或服务端暂未返回',
-                                style: TextStyle(fontSize: 12, color: AppPalette.muted)),
-                        ],
-                      ),
-                    ),
-                    Icon(Icons.chevron_right, color: AppPalette.subtle),
-                  ],
-                ),
-              ),
-            ),
-            SizedBox(height: 12),
-            _kv('本次行程',
-                journey == null ? '—' : '${journey!.toStringAsFixed(1)} km'),
-            _kv('服务端数据时间', ts),
-            if (lastRefresh != null)
-              _kv('本地刷新',
-                  lastRefresh!.toLocal().toString().split('.').first),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // 跳系统地图的功能已由 MapPage 内部统一提供（MapPage 底部有"系统地图打开"），
-  // 主页这里不再重复实现，避免两处逻辑分叉。
-
-  Widget _kv(String k, String v) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
-        child: Row(
-          children: [
-            Text(k, style: TextStyle(color: AppPalette.muted)),
-            const Spacer(),
-            Text(v, style: const TextStyle(fontSize: 14)),
-          ],
-        ),
-      );
-}
 
 /// 安全状态 + 告警：锁/门/窗 优先扫一眼，异常高亮
 class _SafetyStatusCard extends StatelessWidget {
@@ -1427,14 +853,19 @@ class _SafetyStatusCard extends StatelessWidget {
   final VoidCallback onAiExplain;
   final VoidCallback? onOpenMessages;
 
-  Widget _gate(String label, IconData icon, bool? closed,
-      {required String onText, required String offText}) {
+  Widget _gate(
+    String label,
+    IconData icon,
+    bool? closed, {
+    required String onText,
+    required String offText,
+  }) {
     final ok = closed == true;
     final color = closed == null
         ? AppPalette.muted
         : ok
-            ? AppPalette.ok
-            : AppPalette.warn;
+        ? AppPalette.ok
+        : AppPalette.warn;
     return Expanded(
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 3),
@@ -1448,8 +879,10 @@ class _SafetyStatusCard extends StatelessWidget {
           children: [
             Icon(icon, size: 18, color: color),
             const SizedBox(height: 4),
-            Text(label,
-                style: TextStyle(fontSize: 11, color: AppPalette.muted)),
+            Text(
+              label,
+              style: TextStyle(fontSize: 11, color: AppPalette.muted),
+            ),
             const SizedBox(height: 2),
             Text(
               closed == null ? '—' : (ok ? onText : offText),
@@ -1469,10 +902,12 @@ class _SafetyStatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = summary;
     final all = alerts ?? const <VehicleAlert>[];
-    final visible =
-        all.where((a) => !ignoredKeys.contains(alertKeyOf(a))).toList();
+    final visible = all
+        .where((a) => !ignoredKeys.contains(alertKeyOf(a)))
+        .toList();
     final hiddenCount = all.length - visible.length;
-    final hasIssue = s.allLocked == false ||
+    final hasIssue =
+        s.allLocked == false ||
         s.allDoorsClosed == false ||
         s.allWindowsClosed == false;
 
@@ -1518,12 +953,27 @@ class _SafetyStatusCard extends StatelessWidget {
             const SizedBox(height: 12),
             Row(
               children: [
-                _gate('中控锁', Icons.lock_outline, s.allLocked,
-                    onText: '已锁', offText: '未锁'),
-                _gate('车门', Icons.door_front_door_outlined, s.allDoorsClosed,
-                    onText: '关', offText: '开'),
-                _gate('车窗', Icons.blinds_closed_outlined, s.allWindowsClosed,
-                    onText: '关', offText: '开'),
+                _gate(
+                  '中控锁',
+                  Icons.lock_outline,
+                  s.allLocked,
+                  onText: '已锁',
+                  offText: '未锁',
+                ),
+                _gate(
+                  '车门',
+                  Icons.door_front_door_outlined,
+                  s.allDoorsClosed,
+                  onText: '关',
+                  offText: '开',
+                ),
+                _gate(
+                  '车窗',
+                  Icons.blinds_closed_outlined,
+                  s.allWindowsClosed,
+                  onText: '关',
+                  offText: '开',
+                ),
               ],
             ),
             if (visible.isNotEmpty) ...[
@@ -1544,7 +994,11 @@ class _SafetyStatusCard extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        Icon(Icons.warning_amber, size: 16, color: AppPalette.warn),
+                        Icon(
+                          Icons.warning_amber,
+                          size: 16,
+                          color: AppPalette.warn,
+                        ),
                         const SizedBox(width: 6),
                         Text(
                           '告警 ${visible.length} 条',
@@ -1557,9 +1011,13 @@ class _SafetyStatusCard extends StatelessWidget {
                         const Spacer(),
                         InkWell(
                           onTap: () => onIgnore(alertKeyOf(visible.first)),
-                          child: Text('忽略',
-                              style: TextStyle(
-                                  fontSize: 11, color: AppPalette.subtle)),
+                          child: Text(
+                            '忽略',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: AppPalette.subtle,
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -1584,12 +1042,18 @@ class _SafetyStatusCard extends StatelessWidget {
                           if (visible.length > 2) '另有 ${visible.length - 2} 条',
                           if (hiddenCount > 0) '已忽略 $hiddenCount',
                         ].join(' · '),
-                        style: TextStyle(fontSize: 11, color: AppPalette.subtle),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: AppPalette.subtle,
+                        ),
                       ),
                     TextButton.icon(
                       onPressed: onAiExplain,
                       icon: const Icon(Icons.auto_awesome, size: 14),
-                      label: const Text('AI 解读告警', style: TextStyle(fontSize: 12)),
+                      label: const Text(
+                        'AI 解读告警',
+                        style: TextStyle(fontSize: 12),
+                      ),
                       style: TextButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 4),
                         minimumSize: Size.zero,
@@ -1602,8 +1066,10 @@ class _SafetyStatusCard extends StatelessWidget {
             ] else if (hiddenCount > 0)
               InkWell(
                 onTap: onRestore,
-                child: Text('已忽略 $hiddenCount 条 · 点击恢复',
-                    style: TextStyle(fontSize: 12, color: AppPalette.info)),
+                child: Text(
+                  '已忽略 $hiddenCount 条 · 点击恢复',
+                  style: TextStyle(fontSize: 12, color: AppPalette.info),
+                ),
               ),
           ],
         ),
@@ -1632,8 +1098,8 @@ class _TyreCard extends StatelessWidget {
     final color = kpa == null
         ? AppPalette.muted
         : bad
-            ? AppPalette.warn
-            : AppPalette.ok;
+        ? AppPalette.warn
+        : AppPalette.ok;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: BoxDecoration(
@@ -1675,7 +1141,10 @@ class _TyreCard extends StatelessWidget {
             Row(
               children: [
                 const Expanded(child: _Title('胎压')),
-                Text(_rangeText, style: TextStyle(fontSize: 12, color: AppPalette.muted)),
+                Text(
+                  _rangeText,
+                  style: TextStyle(fontSize: 12, color: AppPalette.muted),
+                ),
               ],
             ),
             const SizedBox(height: 10),
@@ -1736,9 +1205,9 @@ class _AiSummaryCard extends StatelessWidget {
     final status = aiRunning
         ? '自动总结中…'
         : (autoNote ??
-            (latest == null
-                ? 'AI 车况'
-                : '上次总结 · ${latest.at.month.toString().padLeft(2, '0')}-${latest.at.day.toString().padLeft(2, '0')} ${latest.at.hour.toString().padLeft(2, '0')}:${latest.at.minute.toString().padLeft(2, '0')}'));
+              (latest == null
+                  ? 'AI 车况'
+                  : '上次总结 · ${latest.at.month.toString().padLeft(2, '0')}-${latest.at.day.toString().padLeft(2, '0')} ${latest.at.hour.toString().padLeft(2, '0')}:${latest.at.minute.toString().padLeft(2, '0')}'));
 
     return Card(
       child: InkWell(
@@ -1751,15 +1220,25 @@ class _AiSummaryCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  const Icon(Icons.auto_awesome, size: 18, color: Color(0xFF7B4DFF)),
+                  const Icon(
+                    Icons.auto_awesome,
+                    size: 18,
+                    color: Color(0xFF7B4DFF),
+                  ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text('AI 车况解读',
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w700, fontSize: 15)),
+                    child: Text(
+                      'AI 车况解读',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                      ),
+                    ),
                   ),
-                  Text(status,
-                      style: TextStyle(fontSize: 11, color: AppPalette.subtle)),
+                  Text(
+                    status,
+                    style: TextStyle(fontSize: 11, color: AppPalette.subtle),
+                  ),
                   const Icon(Icons.chevron_right, size: 18),
                 ],
               ),
@@ -1782,13 +1261,8 @@ class _AiSummaryCard extends StatelessWidget {
   }
 }
 
-
 class _MaintCard extends StatelessWidget {
-  const _MaintCard({
-    this.odometerKm,
-    this.lastKm,
-    this.lastMsg,
-  });
+  const _MaintCard({this.odometerKm, this.lastKm, this.lastMsg});
   final double? odometerKm;
   final int? lastKm;
   final String? lastMsg;
@@ -1809,8 +1283,10 @@ class _MaintCard extends StatelessWidget {
                 Icon(Icons.build_outlined, size: 18, color: Colors.brown),
                 SizedBox(width: 6),
                 Expanded(
-                  child: Text('保养提醒',
-                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                  child: Text(
+                    '保养提醒',
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
                 ),
                 if (remain > 0 && cur > 0)
                   Text(
@@ -1823,15 +1299,17 @@ class _MaintCard extends StatelessWidget {
             if (remain <= 0 && cur > 0)
               Text(
                 '已到保养里程（${cur}km），建议检查机油 / 机滤 / 空滤',
-                style: TextStyle(fontSize: 13, color: AppPalette.warn, height: 1.4),
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppPalette.warn,
+                  height: 1.4,
+                ),
               )
             else if (lastMsg != null)
               Text(lastMsg!, style: TextStyle(fontSize: 13, height: 1.4))
             else
               Text(
-                cur <= 0
-                    ? '暂无里程数据'
-                    : '每 5000km 一次 · 下次约 ${next}km',
+                cur <= 0 ? '暂无里程数据' : '每 5000km 一次 · 下次约 ${next}km',
                 style: TextStyle(fontSize: 13, color: AppPalette.strong),
               ),
             SizedBox(height: 4),
@@ -1847,7 +1325,11 @@ class _MaintCard extends StatelessWidget {
 }
 
 class _ErrorCard extends StatelessWidget {
-  const _ErrorCard({required this.error, required this.onRetry, this.onRelogin});
+  const _ErrorCard({
+    required this.error,
+    required this.onRetry,
+    this.onRelogin,
+  });
   final String error;
   final VoidCallback onRetry;
   final VoidCallback? onRelogin;
@@ -1866,14 +1348,20 @@ class _ErrorCard extends StatelessWidget {
               children: [
                 Icon(Icons.error_outline, color: AppPalette.danger),
                 SizedBox(width: 8),
-                Text('获取失败',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: AppPalette.danger)),
+                Text(
+                  '获取失败',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: AppPalette.danger,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 6),
-            Text(error, style: TextStyle(fontSize: 12, color: AppPalette.strong)),
+            Text(
+              error,
+              style: TextStyle(fontSize: 12, color: AppPalette.strong),
+            ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -1897,18 +1385,8 @@ class _Title extends StatelessWidget {
   const _Title(this.text);
   final String text;
   @override
-  Widget build(BuildContext context) =>
-      Text(text, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600));
-}
-
-/// AI 车况卡里横向滚动的一项：标签（小字）+ 数值（粗大字）
-/// 解析服务端时间戳。
-///
-/// 上汽这个接口的 `update_time` 实测是**毫秒**级（如 1788871240000）。
-/// 这里做单位自适应：大于 1e12 视为毫秒，否则视为秒，
-/// 避免以后接口改单位或某个字段用秒时又显示成 5 万年。
-DateTime? _parseServerTs(int? v) {
-  if (v == null || v <= 0) return null;
-  final ms = v > 1000000000000 ? v : v * 1000;
-  return DateTime.fromMillisecondsSinceEpoch(ms);
+  Widget build(BuildContext context) => Text(
+    text,
+    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+  );
 }

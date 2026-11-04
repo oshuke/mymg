@@ -14,6 +14,16 @@ app.*.symbols
 app.*.map.json
 .widget_preview/
 pubget.log
+*.apk
+*.aab
+*.apks
+*.ipa
+*.aar
+*.so
+*.dylib
+*.dll
+*.hprof
+*.dmp
 
 # Rust
 rust/target/
@@ -41,6 +51,12 @@ macos/Flutter/ephemeral/
 # ---------- 本地私有配置（含你自己的协议参数，绝对不要提交） ----------
 config/protocol.env
 config/*.local.*
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
 *.keystore
 *.jks
 key.properties
@@ -55,6 +71,12 @@ probe/
 dump/
 *.pcap
 *.har
+*.pcapng
+app_logs/
+captures/
+screenshots/
+_ui-shots*/
+/UI/
 
 # ---------- 编辑器 / 系统 ----------
 .idea/

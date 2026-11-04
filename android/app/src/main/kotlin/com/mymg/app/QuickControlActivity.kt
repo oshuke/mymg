@@ -33,8 +33,23 @@ class QuickControlActivity : FlutterActivity() {
         }
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        BlePermissionController.onResult(this, requestCode, grantResults)
+    }
+
+    override fun onDestroy() {
+        BlePermissionController.detach(this)
+        super.onDestroy()
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MymgAppInfo.bind(flutterEngine, applicationContext)
         val bleChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "mymg/ble"
@@ -43,31 +58,19 @@ class QuickControlActivity : FlutterActivity() {
         MymgBleKeyClient.bind(bleChannel, applicationContext)
         bleChannel.setMethodCallHandler { call, result ->
             when (call.method) {
-                "requestPermissions" -> {
-                    if (android.os.Build.VERSION.SDK_INT >= 31) {
-                        requestPermissions(
-                            arrayOf(
-                                "android.permission.BLUETOOTH_SCAN",
-                                "android.permission.BLUETOOTH_CONNECT",
-                                "android.permission.ACCESS_FINE_LOCATION",
-                            ),
-                            4321,
-                        )
-                    } else {
-                        requestPermissions(
-                            arrayOf(
-                                "android.permission.ACCESS_FINE_LOCATION",
-                                "android.permission.ACCESS_COARSE_LOCATION",
-                            ),
-                            4321,
-                        )
-                    }
-                    result.success(true)
-                }
+                "requestPermissions" -> BlePermissionController.request(this, result)
+                "openAppSettings" -> BlePermissionController.openAppSettings(this, result)
                 "startScan", "stopScan", "hasScanPermission", "isSupported" ->
                     MymgBleScanner.handle(call, result)
                 "calculateServiceUuid", "formatBookingId", "fixedServiceUuid", "probe", "unlock", "lock", "drive", "trunk", "liftgateOpen", "liftgateClose", "liftgate_open", "liftgate_close", "disconnect", "isConnected", "cachedMaterial", "setAutoDriveAfterUnlock" ->
-                    MymgBleKeyClient.handle(call, result)
+                    if (call.method in setOf(
+                            "probe", "unlock", "lock", "drive", "trunk",
+                            "liftgateOpen", "liftgateClose", "liftgate_open", "liftgate_close",
+                        ) && !BlePermissionController.hasPermissions(this)) {
+                        result.error("PERM", "蓝牙权限未授予，请打开应用设置授权后重试", null)
+                    } else {
+                        MymgBleKeyClient.handle(call, result)
+                    }
                 else -> result.notImplemented()
             }
         }

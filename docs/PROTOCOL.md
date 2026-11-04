@@ -176,3 +176,25 @@ App 仍可启动、可浏览本地缓存的历史数据，联网操作会给出�
 - 会用到广播（多个 FlutterEngine 共存），参考 `MainActivity.kt` 里的 `Collections.synchronizedList`；
 - 长时间链路建议配合前台服务（`MymgBleService`，已提供骨架）；
 - 扫描与连接前建议先 `stopScan()`，避免射频被扫描占用导致连接失败。
+
+## 5. 界面导航通道
+
+`mymg/navigation` 的 `moveToBackground` 无参数，返回 `bool`。
+Android 使用 `moveTaskToBack(true)` 将任务移到后台，不结束 Activity。
+只有首页在两秒内第二次返回时调用；子页面使用 Navigator 返回上一级。
+
+## 6. 可选地图与地址解析
+
+开源版默认不请求在线地图或逆地理服务，仍可显示车辆坐标与标记，并由用户选择外部导航。
+需要在线地图时，通过 Dart 构建参数配置自己有权使用的 GCJ-02 XYZ 图源。车辆 WGS84 坐标在显示前统一转换为 GCJ-02，不能直接填入 WGS84/标准 OSM 图源：
+
+| Dart 构建参数 | 用途 |
+|---|---|
+| `MYMG_MAP_TILE_URL` | HTTPS XYZ 模板，必须包含 `{z}`、`{x}`、`{y}`；可选 `{s}` |
+| `MYMG_MAP_ATTRIBUTION` | 非空图源/数据署名，显示在地图上 |
+| `MYMG_MAP_SUBDOMAINS` | 可选逗号分隔子域 |
+| `MYMG_ENABLE_PUBLIC_GEOCODING=true` | 显式启用 BigDataCloud / Nominatim 地址解析，默认 false |
+
+没有完整图源和署名时不加载瓦片。署名不替代授权；请自行满足服务许可、坐标体系、额度、署名及适用地图规定。
+构建参数会进入二进制，不应放入需要保密的服务密钥。
+地址解析、DNS 回退、外部导航的数据流见 [PRIVACY.md](PRIVACY.md)。

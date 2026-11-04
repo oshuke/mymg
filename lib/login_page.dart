@@ -1,8 +1,11 @@
 import 'app_config.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
 import 'theme_controller.dart';
+
 import 'package:flutter/services.dart'
     show Clipboard, FilteringTextInputFormatter, MethodChannel, TextInputType;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,7 +15,8 @@ import 'package:mymg/src/rust/api.dart';
 import 'car_side_illustration.dart';
 import 'control_config.dart';
 import 'err_util.dart';
-import 'home_page.dart';
+import 'legal_documents.dart';
+import 'product_shell.dart';
 import 'pin_vault.dart';
 import 'token_age.dart';
 import 'ui_motion.dart';
@@ -43,6 +47,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _showTokenLogin = false;
   final _tokenCtrl = TextEditingController();
   final _vinCtrl = TextEditingController();
+
   /// Token 登录可选：清数据后无法自动拉 userId/手机时手动补
   final _tokenUserIdCtrl = TextEditingController();
 
@@ -51,6 +56,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _smsLogging = false;
   String? _error;
   String? _smsHint;
+  bool _agreed = false;
   int _smsCountdown = 0;
   Timer? _smsTimer;
 
@@ -84,6 +90,20 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
+  Future<bool> _requireAgreement() async {
+    if (!_agreed) {
+      setState(() => _error = '请先阅读并同意用户协议和隐私政策');
+      return false;
+    }
+    try {
+      await LegalConsent.accept();
+      return mounted;
+    } catch (_) {
+      if (mounted) setState(() => _error = '无法保存协议确认，请重试');
+      return false;
+    }
+  }
+
   Future<String> _deviceId() async {
     try {
       return await const MethodChannel('mymg/debug')
@@ -95,6 +115,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _sendSms() async {
+    if (!await _requireAgreement()) return;
     final phone = _phoneCtrl.text.trim();
     if (!RegExp(r'^1\d{10}$').hasMatch(phone)) {
       setState(() => _error = '请输入 11 位手机号');
@@ -120,7 +141,9 @@ class _LoginPageState extends State<LoginPage> {
         final ready = m['ready'] == true;
         final v = m['validate'] as String?;
         final err = m['error'] as String?;
-        if (ready || (v != null && v.isNotEmpty) || (err != null && err.isNotEmpty)) {
+        if (ready ||
+            (v != null && v.isNotEmpty) ||
+            (err != null && err.isNotEmpty)) {
           await resCh.invokeMethod('clear');
           if (v != null && v.isNotEmpty) {
             validate = v;
@@ -191,6 +214,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _loginBySms() async {
+    if (!await _requireAgreement()) return;
     final phone = _phoneCtrl.text.trim();
     final code = _smsCtrl.text.trim();
     if (!RegExp(r'^1\d{10}$').hasMatch(phone)) {
@@ -229,17 +253,21 @@ class _LoginPageState extends State<LoginPage> {
         activateWarn = 'token 激活未完成：${formatFrbError(e)}';
       }
       if (!AppConfig.looksLikeAccessToken(token)) {
-        activateWarn = activateWarn ??
+        activateWarn =
+            activateWarn ??
             '当前 token 可能不是 ACCESS_TOKEN；若控车 14101，请改用 Token 登录。';
       } else {
-        activateWarn = activateWarn ??
-            '已使用 swap/ACCESS_TOKEN，可尝试控车；若仍 14101 再用 Token 登录。';
+        activateWarn =
+            activateWarn ?? '已使用 swap/ACCESS_TOKEN，可尝试控车；若仍 14101 再用 Token 登录。';
       }
 
       // userId 可能是数字或空 → 再拉一次
       if (userId.isEmpty) {
         try {
-          final fetched = await authFetchUserId(token: token, deviceId: deviceId);
+          final fetched = await authFetchUserId(
+            token: token,
+            deviceId: deviceId,
+          );
           if (fetched != null && fetched.isNotEmpty) userId = fetched;
         } catch (_) {}
       }
@@ -296,8 +324,8 @@ class _LoginPageState extends State<LoginPage> {
           _error = activateWarn != null
               ? '$activateWarn\n登录已保存，请补填 VIN。'
               : vinErr == null
-                  ? '登录成功！token/userId 已保存，请补填 VIN 后保存。'
-                  : '登录成功！token/userId 已保存。取 VIN 未成功，请补填 VIN。\n$vinErr';
+              ? '登录成功！token/userId 已保存，请补填 VIN 后保存。'
+              : '登录成功！token/userId 已保存。取 VIN 未成功，请补填 VIN。\n$vinErr';
         });
         return;
       }
@@ -308,9 +336,8 @@ class _LoginPageState extends State<LoginPage> {
       }
       if (!mounted) return;
       if (activateWarn != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(activateWarn)),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(activateWarn)));
       }
       if (!AppConfig.looksLikeAccessToken(token)) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -323,7 +350,9 @@ class _LoginPageState extends State<LoginPage> {
         );
       }
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => HomePage(token: token, vin: vin)),
+        MaterialPageRoute(
+          builder: (_) => ProductShell(token: token, vin: vin),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -338,7 +367,9 @@ class _LoginPageState extends State<LoginPage> {
     final v = _vinCtrl.text.trim().toUpperCase();
     if (t.isEmpty) return '请粘贴 ACCESS_TOKEN';
     if (!AppConfig.looksLikeAccessToken(t)) {
-      return AppConfig.tokenSuffix.isEmpty ? 'token 不能为空' : 'token 必须以 ${AppConfig.tokenSuffix} 结尾';
+      return AppConfig.tokenSuffix.isEmpty
+          ? 'token 不能为空'
+          : 'token 必须以 ${AppConfig.tokenSuffix} 结尾';
     }
     if (v.isEmpty) return '请填入 17 位 VIN';
     if (!RegExp(r'^[A-HJ-NPR-Z0-9]{17}$').hasMatch(v)) {
@@ -348,6 +379,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _saveTokenLogin() async {
+    if (!await _requireAgreement()) return;
     final err = _tokenLoginError();
     if (err != null) {
       setState(() => _error = err);
@@ -374,7 +406,10 @@ class _LoginPageState extends State<LoginPage> {
       if (mobile.isEmpty) mobile = prev.mobile;
       if (userId.isEmpty || mobile.isEmpty) {
         try {
-          final fetched = await authFetchUserId(token: token, deviceId: deviceId);
+          final fetched = await authFetchUserId(
+            token: token,
+            deviceId: deviceId,
+          );
           if (fetched != null && fetched.isNotEmpty) userId = fetched;
         } catch (_) {}
       }
@@ -404,7 +439,9 @@ class _LoginPageState extends State<LoginPage> {
         );
       }
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => HomePage(token: token, vin: vin)),
+        MaterialPageRoute(
+          builder: (_) => ProductShell(token: token, vin: vin),
+        ),
       );
     } catch (e) {
       if (mounted) setState(() => _error = '保存失败：${formatFrbError(e)}');
@@ -423,247 +460,285 @@ class _LoginPageState extends State<LoginPage> {
             index: 0,
             baseDelay: const Duration(milliseconds: 20),
             child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // 小米汽车风品牌头
-              Center(
-                child: CarSideIllustration(
-                  width: 200,
-                  height: 72,
-                  accentColor: Theme.of(context).colorScheme.primary,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 简洁品牌头
+                Center(
+                  child: CarSideIllustration(
+                    width: 200,
+                    height: 72,
+                    accentColor: Theme.of(context).colorScheme.primary,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primary,
-                      borderRadius: BorderRadius.circular(12),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primary,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.directions_car,
+                        color: Colors.white,
+                        size: 22,
+                      ),
                     ),
-                    child: const Icon(Icons.directions_car,
-                        color: Colors.white, size: 22),
-                  ),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('MYMG',
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'MYMG',
                             style: TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.w800,
-                                color: AppPalette.strong,
-                                letterSpacing: 0.5)),
-                        Text('车况 · 智能控车 · 消息中心',
+                              fontSize: 24,
+                              fontWeight: FontWeight.w800,
+                              color: AppPalette.strong,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          Text(
+                            '车况 · 智能控车 · 消息中心',
                             style: TextStyle(
-                                color: AppPalette.muted, fontSize: 12)),
-                      ],
+                              color: AppPalette.muted,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
-              ),
-              SizedBox(height: 28),
-              Text('手机号验证码登录',
+                  ],
+                ),
+                SizedBox(height: 28),
+                Text(
+                  '手机号验证码登录',
                   style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                      color: AppPalette.strong)),
-              SizedBox(height: 6),
-              Text(
-                '与官方同链路：滑块 + 短信。登录后自动保存 token / 手机号 / userId。',
-                style: TextStyle(color: AppPalette.muted, fontSize: 13),
-              ),
-              const SizedBox(height: 20),
-
-              // 品牌
-              SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment(value: 'MGLive', label: Text('名爵 MG')),
-                  ButtonSegment(value: 'Roewe', label: Text('荣威')),
-                ],
-                selected: {_brand},
-                onSelectionChanged: (s) => setState(() => _brand = s.first),
-              ),
-              const SizedBox(height: 16),
-
-              _fieldRow(
-                controller: _phoneCtrl,
-                label: '手机号',
-                hint: '官方 App 绑定号',
-                obscure: false,
-                keyboardType: TextInputType.phone,
-                maxLength: 11,
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: _fieldRow(
-                      controller: _smsCtrl,
-                      label: '短信验证码',
-                      hint: '6 位数字',
-                      obscure: false,
-                      keyboardType: TextInputType.number,
-                      maxLength: 8,
-                    ),
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                    color: AppPalette.strong,
                   ),
-                  SizedBox(width: 8),
-                  Padding(
-                    padding: const EdgeInsets.only(top: 22),
-                    child: OutlinedButton(
-                      onPressed: (_smsSending || _smsCountdown > 0)
-                          ? null
-                          : _sendSms,
-                      child: Text(
-                        _smsCountdown > 0 ? '${_smsCountdown}s' : '获取验证码',
-                        style: TextStyle(fontSize: 12),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  '与官方同链路：滑块 + 短信。登录后自动保存 token / 手机号 / userId。',
+                  style: TextStyle(color: AppPalette.muted, fontSize: 13),
+                ),
+                const SizedBox(height: 20),
+
+                AgreementControl(
+                  value: _agreed,
+                  onChanged: (_saving || _smsSending || _smsLogging)
+                      ? null
+                      : (value) => setState(() {
+                          _agreed = value;
+                          _error = null;
+                        }),
+                ),
+                const SizedBox(height: 16),
+                // 品牌
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'MGLive', label: Text('名爵 MG')),
+                    ButtonSegment(value: 'Roewe', label: Text('荣威')),
+                  ],
+                  selected: {_brand},
+                  onSelectionChanged: (s) => setState(() => _brand = s.first),
+                ),
+                const SizedBox(height: 16),
+
+                _fieldRow(
+                  controller: _phoneCtrl,
+                  label: '手机号',
+                  hint: '官方 App 绑定号',
+                  obscure: false,
+                  keyboardType: TextInputType.phone,
+                  maxLength: 11,
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _fieldRow(
+                        controller: _smsCtrl,
+                        label: '短信验证码',
+                        hint: '6 位数字',
+                        obscure: false,
+                        keyboardType: TextInputType.number,
+                        maxLength: 8,
+                      ),
+                    ),
+                    SizedBox(width: 8),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 22),
+                      child: OutlinedButton(
+                        onPressed: (_smsSending || _smsCountdown > 0)
+                            ? null
+                            : _sendSms,
+                        child: Text(
+                          _smsCountdown > 0 ? '${_smsCountdown}s' : '获取验证码',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_smsHint != null) ...[
+                  SizedBox(height: 8),
+                  Text(
+                    _smsHint!,
+                    style: TextStyle(fontSize: 12, color: AppPalette.muted),
+                  ),
+                ],
+
+                const SizedBox(height: 8),
+                _fieldRow(
+                  controller: _pinCtrl,
+                  label: '控车 PIN（可选）',
+                  hint: '4~8 位，设置里也可再改',
+                  obscure: true,
+                  keyboardType: TextInputType.number,
+                  maxLength: 8,
+                ),
+
+                if (_error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    _error!,
+                    style: TextStyle(color: Colors.red, fontSize: 13),
+                  ),
+                ],
+
+                const SizedBox(height: 20),
+                FilledButton(
+                  onPressed: _smsLogging ? null : _loginBySms,
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                  ),
+                  child: _smsLogging
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : Text('验证码登录', style: TextStyle(fontSize: 16)),
+                ),
+
+                SizedBox(height: 16),
+                // 备用：token 登录折叠
+                if (!_showTokenLogin)
+                  TextButton.icon(
+                    onPressed: () => setState(() => _showTokenLogin = true),
+                    icon: Icon(Icons.expand_more, size: 18),
+                    label: Text('备用：粘贴 Token 登录'),
+                  )
+                else ...[
+                  const Divider(),
+                  SizedBox(height: 4),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '备用：Token / VIN',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
+                  SizedBox(height: 4),
+                  Text(
+                    '验证码不可用时使用：粘贴官方 App 的 ACCESS_TOKEN。',
+                    style: TextStyle(color: AppPalette.muted, fontSize: 12),
+                  ),
+                  const SizedBox(height: 12),
+                  _fieldRow(
+                    controller: _tokenCtrl,
+                    label: 'ACCESS_TOKEN',
+                    hint: AppConfig.tokenHint,
+                    obscure: false,
+                    keyboardType: TextInputType.text,
+                    maxLength: 80,
+                    onPaste: () async {
+                      final data = await Clipboard.getData('text/plain');
+                      if (data?.text != null) {
+                        setState(() => _tokenCtrl.text = data!.text!.trim());
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  _fieldRow(
+                    controller: _vinCtrl,
+                    label: 'VIN（17 位）',
+                    hint: '17 位字母/数字',
+                    obscure: false,
+                    keyboardType: TextInputType.text,
+                    textCapital: true,
+                    maxLength: 17,
+                    onPaste: () async {
+                      final data = await Clipboard.getData('text/plain');
+                      if (data?.text != null) {
+                        setState(
+                          () =>
+                              _vinCtrl.text = data!.text!.trim().toUpperCase(),
+                        );
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  _fieldRow(
+                    controller: _tokenUserIdCtrl,
+                    label: '控车 userId（可选）',
+                    hint: '你的账号 userId（可选）',
+                    obscure: false,
+                    keyboardType: TextInputType.number,
+                    maxLength: 32,
+                    onPaste: () async {
+                      final data = await Clipboard.getData('text/plain');
+                      if (data?.text != null) {
+                        setState(
+                          () => _tokenUserIdCtrl.text = data!.text!.trim(),
+                        );
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '说明：控车需要官方 App 的 ACCESS_TOKEN。'
+                    '验证码登录的 token 在部分场景会被 checkPINCode 拒绝；'
+                    '若短信登录后控车 14101，请改用本方式粘贴官方 token。'
+                    '清数据后若拉不到 userId，请填上面的 userId 与手机号、PIN。',
+                    style: TextStyle(
+                      color: AppPalette.muted,
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton.tonal(
+                    onPressed: _saving ? null : _saveTokenLogin,
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(44),
+                    ),
+                    child: Text(
+                      _saving ? '保存中…' : '用 Token 进入',
+                      style: const TextStyle(fontSize: 15),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () => setState(() => _showTokenLogin = false),
+                      child: const Text('收起'),
+                    ),
+                  ),
                 ],
-              ),
-              if (_smsHint != null) ...[
-                SizedBox(height: 8),
-                Text(_smsHint!,
-                    style: TextStyle(fontSize: 12, color: AppPalette.muted)),
               ],
-
-              const SizedBox(height: 8),
-              _fieldRow(
-                controller: _pinCtrl,
-                label: '控车 PIN（可选）',
-                hint: '4~8 位，设置里也可再改',
-                obscure: true,
-                keyboardType: TextInputType.number,
-                maxLength: 8,
-              ),
-
-              if (_error != null) ...[
-                const SizedBox(height: 12),
-                Text(_error!,
-                    style: TextStyle(color: Colors.red, fontSize: 13)),
-              ],
-
-              const SizedBox(height: 20),
-              FilledButton(
-                onPressed: _smsLogging ? null : _loginBySms,
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(48),
-                ),
-                child: _smsLogging
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : Text('验证码登录', style: TextStyle(fontSize: 16)),
-              ),
-
-              SizedBox(height: 16),
-              // 备用：token 登录折叠
-              if (!_showTokenLogin)
-                TextButton.icon(
-                  onPressed: () => setState(() => _showTokenLogin = true),
-                  icon: Icon(Icons.expand_more, size: 18),
-                  label: Text('备用：粘贴 Token 登录'),
-                )
-              else ...[
-                const Divider(),
-                SizedBox(height: 4),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('备用：Token / VIN',
-                      style:
-                          TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-                ),
-                SizedBox(height: 4),
-                Text(
-                  '验证码不可用时使用：粘贴官方 App 的 ACCESS_TOKEN。',
-                  style: TextStyle(color: AppPalette.muted, fontSize: 12),
-                ),
-                const SizedBox(height: 12),
-                _fieldRow(
-                  controller: _tokenCtrl,
-                  label: 'ACCESS_TOKEN',
-                  hint: AppConfig.tokenHint,
-                  obscure: false,
-                  keyboardType: TextInputType.text,
-                  maxLength: 80,
-                  onPaste: () async {
-                    final data = await Clipboard.getData('text/plain');
-                    if (data?.text != null) {
-                      setState(() => _tokenCtrl.text = data!.text!.trim());
-                    }
-                  },
-                ),
-                const SizedBox(height: 12),
-                _fieldRow(
-                  controller: _vinCtrl,
-                  label: 'VIN（17 位）',
-                  hint: '17 位字母/数字',
-                  obscure: false,
-                  keyboardType: TextInputType.text,
-                  textCapital: true,
-                  maxLength: 17,
-                  onPaste: () async {
-                    final data = await Clipboard.getData('text/plain');
-                    if (data?.text != null) {
-                      setState(() =>
-                          _vinCtrl.text = data!.text!.trim().toUpperCase());
-                    }
-                  },
-                ),
-                const SizedBox(height: 12),
-                _fieldRow(
-                  controller: _tokenUserIdCtrl,
-                  label: '控车 userId（可选）',
-                  hint: '如 10000004425431；清数据后建议填写',
-                  obscure: false,
-                  keyboardType: TextInputType.number,
-                  maxLength: 32,
-                  onPaste: () async {
-                    final data = await Clipboard.getData('text/plain');
-                    if (data?.text != null) {
-                      setState(() =>
-                          _tokenUserIdCtrl.text = data!.text!.trim());
-                    }
-                  },
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '说明：控车需要官方 App 的 ACCESS_TOKEN。'
-                  '验证码登录的 token 在部分场景会被 checkPINCode 拒绝；'
-                  '若短信登录后控车 14101，请改用本方式粘贴官方 token。'
-                  '清数据后若拉不到 userId，请填上面的 userId 与手机号、PIN。',
-                  style: TextStyle(color: AppPalette.muted, fontSize: 12, height: 1.4),
-                ),
-                const SizedBox(height: 16),
-                FilledButton.tonal(
-                  onPressed: _saving ? null : _saveTokenLogin,
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(44),
-                  ),
-                  child: Text(
-                    _saving ? '保存中…' : '用 Token 进入',
-                    style: const TextStyle(fontSize: 15),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton(
-                    onPressed: () => setState(() => _showTokenLogin = false),
-                    child: const Text('收起'),
-                  ),
-                ),
-              ],
-            ],
             ),
           ),
         ),
@@ -688,8 +763,9 @@ class _LoginPageState extends State<LoginPage> {
           controller: controller,
           obscureText: obscure,
           keyboardType: keyboardType,
-          textCapitalization:
-              textCapital ? TextCapitalization.characters : TextCapitalization.none,
+          textCapitalization: textCapital
+              ? TextCapitalization.characters
+              : TextCapitalization.none,
           maxLength: maxLength,
           inputFormatters: [
             if (keyboardType == TextInputType.number)

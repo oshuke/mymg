@@ -15,6 +15,7 @@ import 'package:mymg/src/rust/api.dart';
 import 'package:mymg/src/rust/frb_generated.dart';
 
 import 'control_config.dart';
+import 'legal_documents.dart';
 import 'pin_vault.dart';
 
 const String kResTaskName = 'mymg.res.run';
@@ -151,6 +152,7 @@ class ReservationConfig {
   /// 前台打开快捷控车时顺手执行已到期的预约（WorkManager 可能被系统饿死）。
   /// 返回 true 表示本次真正下发了控车。
   static Future<bool> tryRunDueInForeground() async {
+    if (!await LegalConsent.isAccepted()) return false;
     final c = await load();
     if (!c.enabled || c.atMs <= 0) return false;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -186,6 +188,7 @@ class ReservationConfig {
 
 /// 真正下发一次预约动作（冷启动 WorkManager / 前台补跑共用）。
 Future<bool> runReservationOnce(ReservationConfig c) async {
+  if (!await LegalConsent.isAccepted()) return false;
   try {
     await RustLib.init();
   } catch (_) {}

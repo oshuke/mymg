@@ -10,7 +10,9 @@
 - ❌ 绕过付费/鉴权、批量控制、他人车辆相关功能
 - ❌ 引入统计/埋点 SDK
 
-提交前请自查：`grep -rn "LSJ" lib rust/src android` 应该没有结果；截图请先打码。
+提交前检查完整暂存区：`git diff --cached --check` 与 `git diff --cached --name-status`。
+核对令牌、VIN、车牌、手机号、MAC、精确位置、私有协议常量和素材授权；仅搜索某一种 VIN 前缀不足以排除泄漏。
+测试仅使用明确的合成数据；不提交 APK、厂商照片、设计参考图、调试截图、备份包或本地协议配置。
 
 ## 可以提
 
@@ -48,4 +50,4 @@ adb install -r build/app/outputs/flutter-apk/app-release.apk
 
 ## 许可证
 
-贡献的代码默认以 GPL-3.0 授权（见 [LICENSE](../LICENSE)）。
+贡献的代码默认以 GPL-3.0 授权（见 [LICENSE](LICENSE)）；请确认拥有代码及素材的公开分发权。

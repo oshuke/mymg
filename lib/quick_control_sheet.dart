@@ -1,19 +1,25 @@
+import 'app_config.dart';
 // 快捷控车弹窗：位置 + 实时车况 + 控车按钮 + 空调滑条 + 预约入口
 // 磁贴 / 小组件 / 图标长按 共用此面板。
 
-import 'app_config.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
 import 'theme_controller.dart';
-import 'package:flutter/services.dart' show HapticFeedback, SystemNavigator;
+
+import 'package:flutter/services.dart'
+    show FilteringTextInputFormatter, SystemNavigator;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:mymg/src/rust/api.dart';
 import 'package:mymg/src/rust/vehicle/control.dart';
+import 'package:mymg/src/rust/vehicle/summary.dart';
 
 import 'ble_key_bridge.dart';
+import 'ble_permission_controller.dart';
+import 'climate_page.dart';
 import 'control_config.dart';
 import 'err_util.dart';
 import 'notification_service.dart';
@@ -21,28 +27,53 @@ import 'pin_vault.dart';
 import 'reservation_service.dart';
 import 'summary_cache.dart';
 import 'token_age.dart';
-import 'ui_motion.dart';
+import 'ui/glass_surface.dart';
+import 'ui/frosted_page.dart';
+import 'ui/vehicle_hero.dart';
 
 /// 应用内 / 小组件 / 控制中心 共用同一弹窗组件，保证数据与连接状态唯一。
-Future<void> showQuickControlSheet(BuildContext context) async {
+Future<void> showQuickControlSheet(
+  BuildContext context, {
+  String? initialAction,
+}) async {
   if (QuickControlHostPage.isShowing) return;
-  await Navigator.of(context, rootNavigator: true).push(
-    PageRouteBuilder(
-      opaque: false,
-      barrierColor: Colors.transparent,
-      barrierDismissible: true,
-      pageBuilder: (_, __, ___) => const QuickControlHostPage(),
-    ),
-  );
+  await Navigator.of(context).push(_QuickControlRoute(initialAction));
+}
+
+// A control sheet is an overlay, not a detail page: dismissing it must preserve
+// the originating tab. Its child owns the slide/fade animation.
+class _QuickControlRoute extends PopupRoute<void> {
+  _QuickControlRoute(this.initialAction);
+  final String? initialAction;
+
+  @override
+  Color get barrierColor => Colors.transparent;
+  @override
+  bool get barrierDismissible => true;
+  @override
+  String get barrierLabel => '关闭控车';
+  @override
+  Duration get transitionDuration => Duration.zero;
+  @override
+  Widget buildPage(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) => QuickControlHostPage(initialAction: initialAction);
 }
 
 /// 透明快捷控车宿主：滑入淡入+缩放；关闭可下滑/点空白/返回。
 /// 无黑色遮罩，桌面/App 底保持可见。
 class QuickControlHostPage extends StatefulWidget {
-  const QuickControlHostPage({super.key, this.standalone = false});
+  const QuickControlHostPage({
+    super.key,
+    this.standalone = false,
+    this.initialAction,
+  });
 
   /// true=独立 Activity（小组件/磁贴），关闭时 pop 系统页面
   final bool standalone;
+  final String? initialAction;
 
   static bool isShowing = false;
 
@@ -62,20 +93,22 @@ class _QuickControlHostPageState extends State<QuickControlHostPage>
     curve: Curves.easeOutCubic,
     reverseCurve: Curves.easeInCubic,
   );
-  late final Animation<Offset> _slide = Tween<Offset>(
-    begin: const Offset(0, 0.35),
-    end: Offset.zero,
-  ).animate(CurvedAnimation(
-    parent: _ctrl,
-    curve: Curves.easeOutCubic,
-    reverseCurve: Curves.easeInCubic,
-  ));
+  late final Animation<Offset> _slide =
+      Tween<Offset>(begin: const Offset(0, 0.35), end: Offset.zero).animate(
+        CurvedAnimation(
+          parent: _ctrl,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        ),
+      );
   late final Animation<double> _scale = Tween<double>(begin: 0.96, end: 1.0)
-      .animate(CurvedAnimation(
-    parent: _ctrl,
-    curve: Curves.easeOutCubic,
-    reverseCurve: Curves.easeInCubic,
-  ));
+      .animate(
+        CurvedAnimation(
+          parent: _ctrl,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        ),
+      );
 
   @override
   void initState() {
@@ -102,7 +135,7 @@ class _QuickControlHostPageState extends State<QuickControlHostPage>
       SystemNavigator.pop();
     } else {
       // PopScope(canPop:false) 下 maybePop 关不掉，必须 pop
-      Navigator.of(context, rootNavigator: true).pop();
+      Navigator.of(context).pop();
     }
   }
 
@@ -135,8 +168,9 @@ class _QuickControlHostPageState extends State<QuickControlHostPage>
                   child: Material(
                     color: Theme.of(context).colorScheme.surface,
                     elevation: 8,
-                    borderRadius:
-                        const BorderRadius.vertical(top: Radius.circular(20)),
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(20),
+                    ),
                     clipBehavior: Clip.antiAlias,
                     child: SafeArea(
                       top: false,
@@ -144,9 +178,12 @@ class _QuickControlHostPageState extends State<QuickControlHostPage>
                         constraints: BoxConstraints(
                           maxHeight: MediaQuery.of(context).size.height * 0.94,
                         ),
-                        child: QuickControlSheet(
-                          standalone: widget.standalone,
-                          onClose: _close,
+                        child: FrostedBackground(
+                          child: QuickControlSheet(
+                            standalone: widget.standalone,
+                            initialAction: widget.initialAction,
+                            onClose: _close,
+                          ),
                         ),
                       ),
                     ),
@@ -162,9 +199,25 @@ class _QuickControlHostPageState extends State<QuickControlHostPage>
 }
 
 class QuickControlSheet extends StatefulWidget {
-  const QuickControlSheet({super.key, this.standalone = false, this.onClose});
+  const QuickControlSheet({
+    super.key,
+    this.standalone = false,
+    this.initialAction,
+    this.onClose,
+    this.embedded = false,
+    this.climateOnly = false,
+    this.token,
+    this.vin,
+  });
 
   final bool standalone;
+  final String? initialAction;
+
+  /// A shortcut may highlight intent, but must never execute on page open.
+  final bool embedded;
+  final bool climateOnly;
+  final String? token;
+  final String? vin;
 
   /// 独立透明壳关闭回调（带动画）；为空时回退 SystemNavigator.pop
   final VoidCallback? onClose;
@@ -185,26 +238,31 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
   bool _blePrefer = false;
   bool _bleConnected = false;
   bool _bleBusy = false;
+
   /// 数字钥匙会话状态：'' | 握手中 | 已鉴权（产品面要能看出「能不能着车」）
   String _bleSession = '';
+
   /// 蓝牙操作序号：只有最新一次操作的回调/看门狗能解锁按钮
   int _bleSeq = 0;
+
   /// 最近一次下发的 BLE 动作（超时事件里不带 action，用它兜底生成文案）
   String _bleLastAction = '';
-
 
   /// 控车结果条幅（显示在弹窗内，避免 SnackBar 被弹窗盖住）
   String? _uiMsg;
   bool _uiMsgIsError = false;
   Map<String, dynamic>? _lastBleEvent;
+
   /// 结果通知去重：**按时间窗**，不是永久去重 —— 每次解锁的结果文案是固定的，
   /// 永久去重会让第二次及以后的解锁/启动授权在口袋里完全没有通知反馈。
   final Map<String, DateTime> _bleNotifiedAt = {};
 
-
   // 座椅加热 / 空调（来自 summary 实时车况）
   bool? _acOn;
   int? _acTempC;
+  int _targetTemp = 24;
+  bool _temperatureEdited = false;
+  VehicleSummary? _summary;
   bool? _seatHeatDriver;
   bool? _seatHeatPassenger;
   int? _seatHeatDriverLevel;
@@ -213,7 +271,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
   // 座椅加热 / 空调（来自 summary 实时车况）
   // 预约（WorkManager 到点执行；独立页内联编辑，不再嵌套弹层）
   bool _resEnabled = false;
-  String _resType = 'ac'; // ac | seat_left | seat_right
+  String _resType = 'ac';
   TimeOfDay _resTime = const TimeOfDay(hour: 8, minute: 0);
   bool _resPanelOpen = false;
   String? _resLastError;
@@ -232,6 +290,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
 
   Future<void> _boot() async {
     await _ble.init();
+    if (!mounted) return;
     _blePrefer = _ble.preferBle;
     _bleSub = _ble.events.listen((ev) {
       if (!mounted) return;
@@ -243,7 +302,8 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
       setState(() {
         _blePrefer = _ble.preferBle;
         // 「已连接」只认真的连上/已鉴权：忙但还没鉴权（正在建链）不能显示成已连接
-        _bleConnected = _ble.state == BleBridgeState.connected ||
+        _bleConnected =
+            _ble.state == BleBridgeState.connected ||
             (_ble.state == BleBridgeState.busy && _bleSession == '已鉴权');
         // ★ 任何终态事件都必须解锁按钮：控车页可能是独立 FlutterEngine
         //   （磁贴/小组件弹出的 QuickControlActivity），事件丢失过一次就会永久卡「蓝牙被占用」。
@@ -266,35 +326,28 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
       });
       _announceBleResult(eventAction, stage, msg);
     });
-    final c = await ControlConfig.load();
+    final saved = await ControlConfig.load();
+    final c = ControlConfig(
+      brand: saved.brand,
+      userId: saved.userId,
+      mobile: saved.mobile,
+      headerDeviceId: saved.headerDeviceId,
+      requireBiometric: saved.requireBiometric,
+      pinSaved: saved.pinSaved,
+      token: widget.token ?? saved.token,
+      vin: widget.vin ?? saved.vin,
+    );
     if (!mounted) return;
     setState(() {
       _cfg = c;
     });
     await _loadReservation();
-    // 到点补跑：WorkManager 可能被系统省电饿死，前台打开时兜底
-    try {
-      final ran = await ReservationConfig.tryRunDueInForeground();
-      if (ran && mounted) {
-        _toast('预约已到点，指令已下发');
-        await _loadReservation();
-      }
-    } catch (_) {}
-    // 优先蓝牙：立刻连钥匙，不等远程车况（车况含 requestVehicleStatus，很慢）
-    if (_blePrefer) {
-      unawaited(_autoConnectBle());
-    }
+    // Opening a surface only loads state. Commands (including overdue
+    // reservations) must never be triggered by navigation or initialAction.
     // 车况后台静默刷新，不挡打开（用户主动看实时以首页下拉为准）
     if (c.tokenOk && c.vinOk) {
       unawaited(_loadStatus());
     }
-  }
-
-  Future<void> _autoConnectBle() async {
-    if (!mounted || !_ble.preferBle) return;
-    if (_ble.state == BleBridgeState.connected) return;
-    await _ble.connectOnceOnSheetOpen();
-    if (mounted) setState(() {});
   }
 
   /// 车端回执 → 通知 + 弹窗条幅。文案面向使用者，不暴露 01/02/FD 这类内部码。
@@ -309,14 +362,12 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
       // 5 秒窗口内同文案不重复通知（同一次操作可能有两个终态事件），
       // 但 5 秒后同样文案要再通知 —— 每次解锁都该有回执。
       final lastAt = _bleNotifiedAt[line];
-      final fresh = lastAt == null ||
+      final fresh =
+          lastAt == null ||
           DateTime.now().difference(lastAt) > const Duration(seconds: 5);
       if (fresh) {
         _bleNotifiedAt[line] = DateTime.now();
-        unawaited(_notifyLocal(
-          stage == 'ready' ? '蓝牙车控' : '蓝牙车控失败',
-          line,
-        ));
+        unawaited(_notifyLocal(stage == 'ready' ? '蓝牙车控' : '蓝牙车控失败', line));
       }
     }
     _toast(line);
@@ -349,11 +400,22 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
 
   Future<void> _loadReservation() async {
     final c = await ReservationConfig.load();
+    // Retire previously saved, unsupported heating reservations as well as
+    // removing their UI; otherwise they could still fire in the background.
+    if (c.enabled && c.type != 'ac') {
+      await ReservationConfig.saveAndSchedule(
+        enabled: false,
+        type: 'ac',
+        hour: c.hour,
+        minute: c.minute,
+        when: DateTime.now(),
+      );
+    }
     final p = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
-      _resEnabled = c.enabled;
-      _resType = c.type;
+      _resEnabled = c.enabled && c.type == 'ac';
+      _resType = 'ac';
       _resTime = TimeOfDay(hour: c.hour, minute: c.minute);
       _resLastError = p.getString('mymg.res.last_err');
     });
@@ -362,7 +424,13 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
   Future<void> _saveReservation() async {
     // 到点时间：今天已过则记明天
     final now = DateTime.now();
-    var when = DateTime(now.year, now.month, now.day, _resTime.hour, _resTime.minute);
+    var when = DateTime(
+      now.year,
+      now.month,
+      now.day,
+      _resTime.hour,
+      _resTime.minute,
+    );
     if (!when.isAfter(now)) {
       when = when.add(const Duration(days: 1));
     }
@@ -375,16 +443,14 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
     );
     if (!mounted) return;
     setState(() => _resLastError = null);
-    _toast(_resEnabled
-        ? '预约已保存：${_resTime.format(context)} 自动执行 ${_typeLabel(_resType)}'
-        : '预约已关闭');
+    _toast(
+      _resEnabled
+          ? '预约已保存：${_resTime.format(context)} 自动执行 ${_typeLabel(_resType)}'
+          : '预约已关闭',
+    );
   }
 
-  String _typeLabel(String t) => switch (t) {
-        'seat_left' => '主驾加热',
-        'seat_right' => '副驾加热',
-        _ => '空调',
-      };
+  String _typeLabel(String t) => '空调';
 
   Future<void> _loadStatus({bool force = false}) async {
     final c = _cfg;
@@ -400,8 +466,12 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
       );
       if (!mounted) return;
       setState(() {
+        _summary = s;
         _acOn = s.acOn;
         _acTempC = s.acTargetTemp?.toInt();
+        if (!_temperatureEdited && _acTempC != null) {
+          _targetTemp = _acTempC!.clamp(16, 30);
+        }
         _seatHeatDriver = s.seatHeatDriver;
         _seatHeatPassenger = s.seatHeatPassenger;
         _seatHeatDriverLevel = s.seatHeatDriverLevel?.toInt();
@@ -432,11 +502,14 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
           final p = await _vault.loadIntoMemory();
           if (p != null) return p;
         }
-        _toast('指纹未通过，请手动输入 PIN');
+        // Authentication cancellation is silent; explicit PIN entry remains
+        // available on the next attempt if biometrics are unavailable.
+        return null;
       }
     }
     final p = await _vault.loadIntoMemory();
     if (p != null) return p;
+    if (!mounted) return null;
     final ctrl = TextEditingController();
     final pin = await showDialog<String>(
       context: context,
@@ -455,6 +528,8 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
             controller: ctrl,
             autofocus: true,
             keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            maxLength: 8,
             obscureText: true,
             style: TextStyle(color: scheme.onSurface),
             decoration: InputDecoration(
@@ -464,24 +539,27 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
               hintText: '4~8 位数字',
               hintStyle: TextStyle(color: scheme.onSurfaceVariant),
               filled: true,
-              fillColor: scheme.surfaceContainerHighest.withOpacity(0.4),
+              fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
             ),
           ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('取消')),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
             FilledButton(
-                onPressed: () => Navigator.pop(ctx, ctrl.text),
-                child: const Text('确定')),
+              onPressed: () => Navigator.pop(ctx, ctrl.text),
+              child: const Text('确定'),
+            ),
           ],
         );
       },
     );
-    if (pin == null || pin.trim().length < 4) return null;
+    if (pin == null || !RegExp(r'^\d{4,8}$').hasMatch(pin.trim())) {
+      return null;
+    }
     await _vault.saveEncrypted(pin.trim());
     await _vault.loadIntoMemory();
-    if (mounted) await _boot();
     return pin.trim();
   }
 
@@ -495,31 +573,28 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
       return;
     }
 
-    // ── 蓝牙模式：锁/解/后备箱只走 BLE（与设置页同一原生后台），绝不降级远程 ─────────
-    if (bleAction != null && _blePrefer) {
-      await _tryBleActionStrict(bleAction, label);
-      return;
-    }
-
-    final c = _cfg;
-    if (c == null || !c.readyForControl) {
-      _toast('请先在「设置 → 远程控车」完成配置（userId/手机/PIN/VIN）');
-      return;
-    }
-    _toast('「$label」请求中…');
-    final pin = await _ensurePin();
-    if (pin == null || pin.isEmpty) {
-      _toast('未取得控车 PIN，已取消「$label」');
-      return;
-    }
+    // Guard synchronously, before permission requests, biometrics or PIN UI.
     setState(() => _busy = true);
     try {
+      if (bleAction != null && _blePrefer) {
+        await _tryBleActionStrict(bleAction, label);
+        return;
+      }
+      final c = _cfg;
+      if (c == null || !c.readyForControl) {
+        _toast('请先在「设置 → 远程控车」完成配置');
+        return;
+      }
+      final pin = await _ensurePin();
+      if (!mounted || pin == null || pin.isEmpty) return;
+      _toast('「$label」请求中…');
       var config = c;
       // 控车前：token 必须是 ACCESS_TOKEN；不是则先激活一次
       if (!AppConfig.looksLikeAccessToken(config.token ?? '')) {
         final upgraded = await _tryUpgradeToken(config);
         if (upgraded != null) config = upgraded;
       }
+      if (!mounted) return;
       var outcome = await run(pin, config);
       // 登录态失效：刷新 token 后只重试一次，绝不双发
       Future<ControlOutcome> retryWithRefresh() async {
@@ -529,8 +604,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
       }
 
       final firstMsg = outcome.message ?? '';
-      final rateLimited =
-          firstMsg.contains('15006') || firstMsg.contains('频繁');
+      final rateLimited = firstMsg.contains('15006') || firstMsg.contains('频繁');
       if (!outcome.accepted &&
           !rateLimited &&
           (firstMsg.contains('14101') ||
@@ -541,17 +615,17 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
       }
       if (!mounted) return;
       if (outcome.accepted) {
-        // 只报「已下发」；结果后台轮询，不阻塞按钮
+        // Accepted means dispatched, never confirmed vehicle state.
         _toast('「$label」已下发');
         final cid = outcome.commandId;
-        final brand = c.brand;
-        final token = c.token!;
-        final vin = c.vin!;
-        final userId = c.userId;
-        final mobile = c.mobile;
-        final devId = c.headerDeviceId;
+        final brand = config.brand;
+        final token = config.token!;
+        final vin = config.vin!;
+        final userId = config.userId;
+        final mobile = config.mobile;
+        final devId = config.headerDeviceId;
         if (cid != null) {
-          unawaited(_pollControlResult(
+          await _pollControlResult(
             label: label,
             brand: brand,
             token: token,
@@ -560,7 +634,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
             mobile: mobile,
             headerDeviceId: devId,
             commandId: cid,
-          ));
+          );
         }
         unawaited(_loadStatus(force: true));
       } else {
@@ -582,8 +656,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
       _toast('「$label」：蓝牙操作进行中，请稍候');
       return;
     }
-    // 独立引擎（磁贴/小组件弹出的控车页）首次用蓝牙时要主动申请权限
-    await _ble.requestBlePermissions();
+    // send() waits for permission in both engines; hold busy before that await.
     // 材料补齐交给 send()：它会依次尝试原生落盘 / 联网钥匙列表，并给出具体缺什么。
     setState(() {
       _bleBusy = true;
@@ -591,6 +664,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
     _bleLastAction = action;
     final seq = ++_bleSeq;
     final ok = await _ble.send(action);
+    if (!mounted) return;
     if (!ok) {
       if (mounted) setState(() => _bleBusy = false);
       // send() 失败时 message 已是人话（缺 mac / 缺 keyReference / 缺密钥），直接展示
@@ -607,7 +681,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
     });
   }
 
-  /// 后台轮询远程指令结果，不再阻塞 _act（首包延迟只到「已下发」）。
+  /// Keep the duplicate guard held until the remote result is known or times out.
   Future<void> _pollControlResult({
     required String label,
     required String brand,
@@ -621,6 +695,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
     // 单次查询；Dart 侧最多 4 轮（2s/3s/3s/3s），有终态立刻停
     for (var i = 0; i < 4; i++) {
       await Future<void>.delayed(Duration(seconds: i == 0 ? 2 : 3));
+      if (!mounted) return;
       try {
         final st = await vehicleGetControlStatus(
           brand: brand,
@@ -631,6 +706,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
           headerDeviceId: headerDeviceId,
           commandId: commandId,
         );
+        if (!mounted) return;
         // Rust 已解析 done/success
         if (!st.done) continue;
         if (st.success) {
@@ -650,6 +726,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
       }
     }
   }
+
   /// 返回更新后的 ControlConfig；激活失败返回 null（继续用原 config）。
   Future<ControlConfig?> _tryUpgradeToken(ControlConfig c) async {
     try {
@@ -681,24 +758,104 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
     }
   }
 
-  Future<void> _lock() => _act('锁车', (pin, c) => vehicleLock(
-        brand: c.brand, token: c.token!, vin: c.vin!,
-        pin: pin, userId: c.userId, mobile: c.mobile, headerDeviceId: c.headerDeviceId,
-      ), bleAction: 'lock');
-  Future<void> _unlock() => _act('解锁', (pin, c) => vehicleUnlock(
-        brand: c.brand, token: c.token!, vin: c.vin!,
-        pin: pin, userId: c.userId, mobile: c.mobile, headerDeviceId: c.headerDeviceId,
-      ), bleAction: 'unlock');
-  Future<void> _trunk() => _act('开后备箱', (pin, c) => vehicleUnlockBoot(
-        brand: c.brand, token: c.token!, vin: c.vin!,
-        pin: pin, userId: c.userId, mobile: c.mobile, headerDeviceId: c.headerDeviceId,
-      ), bleAction: 'trunk');
+  Future<void> _lock() => _act(
+    '锁车',
+    (pin, c) => vehicleLock(
+      brand: c.brand,
+      token: c.token!,
+      vin: c.vin!,
+      pin: pin,
+      userId: c.userId,
+      mobile: c.mobile,
+      headerDeviceId: c.headerDeviceId,
+    ),
+    bleAction: 'lock',
+  );
+  Future<void> _unlock() => _act(
+    '解锁',
+    (pin, c) => vehicleUnlock(
+      brand: c.brand,
+      token: c.token!,
+      vin: c.vin!,
+      pin: pin,
+      userId: c.userId,
+      mobile: c.mobile,
+      headerDeviceId: c.headerDeviceId,
+    ),
+    bleAction: 'unlock',
+  );
+  Future<void> _trunk() => _act(
+    '开后备箱',
+    (pin, c) => vehicleUnlockBoot(
+      brand: c.brand,
+      token: c.token!,
+      vin: c.vin!,
+      pin: pin,
+      userId: c.userId,
+      mobile: c.mobile,
+      headerDeviceId: c.headerDeviceId,
+    ),
+    bleAction: 'trunk',
+  );
 
   /// 免钥匙启动不再是独立按钮：解锁成功由原生自动补一次 driveCycle（120 秒打火），
   /// 见 MymgBleKeyClient 的 autoDriveAfterUnlock。
 
   /// 找车：官方 requestFindVehicle（horn_volume=low / time_length=30）
-  Future<void> _find() => _act('找车', (pin, c) => vehicleFindVehicle(
+  Future<void> _find() => _act(
+    '找车',
+    (pin, c) => vehicleFindVehicle(
+      brand: c.brand,
+      token: c.token!,
+      vin: c.vin!,
+      pin: pin,
+      userId: c.userId,
+      mobile: c.mobile,
+      headerDeviceId: c.headerDeviceId,
+      isFlashing: true,
+      hornVolume: 0,
+      timeLengthS: 30,
+    ),
+  );
+  // 找车按钮已按官方参数加回（2026-09-22）
+
+  Future<void> _acToggle(bool on) async {
+    if (_busy) return;
+    if (on) {
+      await _act(
+        '开空调',
+        (pin, c) => vehicleAcOn(
+          brand: c.brand,
+          token: c.token!,
+          vin: c.vin!,
+          pin: pin,
+          userId: c.userId,
+          mobile: c.mobile,
+          headerDeviceId: c.headerDeviceId,
+          targetTempC: _targetTemp,
+        ),
+      );
+    } else {
+      await _act(
+        '关空调',
+        (pin, c) => vehicleAcOff(
+          brand: c.brand,
+          token: c.token!,
+          vin: c.vin!,
+          pin: pin,
+          userId: c.userId,
+          mobile: c.mobile,
+          headerDeviceId: c.headerDeviceId,
+        ),
+      );
+    }
+  }
+
+  Future<void> _acTempConfirm() async {
+    if (_busy) return;
+    await _act(
+      '设置温度',
+      (pin, c) => vehicleAcOn(
         brand: c.brand,
         token: c.token!,
         vin: c.vin!,
@@ -706,51 +863,10 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
         userId: c.userId,
         mobile: c.mobile,
         headerDeviceId: c.headerDeviceId,
-        isFlashing: true,
-        hornVolume: 0,
-        timeLengthS: 30,
-      ));
-  // 找车按钮已按官方参数加回（2026-09-22）
-
-  Future<void> _acToggle(bool on) async {
-    if (_acOn != true && !on) return;
-    if (_busy) return;
-    setState(() => _acOn = on);
-    if (on) {
-      await _act('开空调', (pin, c) => vehicleAcOn(
-            brand: c.brand, token: c.token!, vin: c.vin!,
-            pin: pin, userId: c.userId, mobile: c.mobile, headerDeviceId: c.headerDeviceId,
-            targetTempC: _acTempC ?? 24,
-          ));
-    } else {
-      await _act('关空调', (pin, c) => vehicleAcOff(
-            brand: c.brand, token: c.token!, vin: c.vin!,
-            pin: pin, userId: c.userId, mobile: c.mobile, headerDeviceId: c.headerDeviceId,
-          ));
-    }
+        targetTempC: _targetTemp,
+      ),
+    );
   }
-
-  Future<void> _acTempConfirm() async {
-    if (_acOn != true || _busy) return;
-    await _act('设置温度', (pin, c) => vehicleAcOn(
-          brand: c.brand, token: c.token!, vin: c.vin!,
-          pin: pin, userId: c.userId, mobile: c.mobile, headerDeviceId: c.headerDeviceId,
-          targetTempC: _acTempC ?? 24,
-        ));
-  }
-
-  Future<void> _seatHeat(String seat, bool on, String label) =>
-      _act(label, (pin, c) => vehicleSeatHeat(
-            brand: c.brand,
-            token: c.token!,
-            vin: c.vin!,
-            pin: pin,
-            userId: c.userId,
-            mobile: c.mobile,
-            headerDeviceId: c.headerDeviceId,
-            seat: seat,
-            on_: on,
-          ));
 
   Future<void> _openReservation() async {
     // 独立透明页里嵌套 showModalBottomSheet / showTimePicker 常吞点击，
@@ -758,130 +874,11 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
     setState(() => _resPanelOpen = !_resPanelOpen);
   }
 
-  Widget _reservationPanel(bool enabled) {
-    return Card(
-      elevation: 0,
-      color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.45),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.schedule, size: 18, color: Colors.indigo),
-                SizedBox(width: 6),
-                Expanded(
-                  child: Text('预约执行',
-                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                ),
-                Switch(
-                  value: _resEnabled,
-                  onChanged: enabled
-                      ? (v) async {
-                          setState(() => _resEnabled = v);
-                          await _saveReservation();
-                        }
-                      : null,
-                ),
-              ],
-            ),
-            if (_resLastError != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(
-                  '上次失败：$_resLastError',
-                  style: TextStyle(fontSize: 11, color: Colors.redAccent),
-                ),
-              ),
-            if (_resEnabled) ...[
-              Text('预约项目', style: TextStyle(fontSize: 12, color: AppPalette.muted)),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 8,
-                children: [
-                  ChoiceChip(
-                    label: const Text('空调'),
-                    selected: _resType == 'ac',
-                    onSelected: enabled
-                        ? (_) {
-                            setState(() => _resType = 'ac');
-                            _saveReservation();
-                          }
-                        : null,
-                  ),
-                  const SizedBox(width: 6),
-                  ChoiceChip(
-                    label: const Text('主驾热'),
-                    selected: _resType == 'seat_left',
-                    onSelected: enabled
-                        ? (_) {
-                            setState(() => _resType = 'seat_left');
-                            _saveReservation();
-                          }
-                        : null,
-                  ),
-                  const SizedBox(width: 6),
-                  ChoiceChip(
-                    label: const Text('副驾热'),
-                    selected: _resType == 'seat_right',
-                    onSelected: enabled
-                        ? (_) {
-                            setState(() => _resType = 'seat_right');
-                            _saveReservation();
-                          }
-                        : null,
-                  ),
-                ],
-              ),
-              SizedBox(height: 8),
-              InkWell(
-                borderRadius: BorderRadius.circular(8),
-                onTap: enabled
-                    ? () async {
-                        final t = await showTimePicker(
-                          context: context,
-                          initialTime: _resTime,
-                        );
-                        if (t != null) {
-                          setState(() => _resTime = t);
-                          await _saveReservation();
-                        }
-                      }
-                    : null,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Row(
-                    children: [
-                      Icon(Icons.access_time, size: 16, color: AppPalette.muted),
-                      SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          '执行时间  ${_resTime.format(context)}',
-                          style: TextStyle(fontSize: 13),
-                        ),
-                      ),
-                      Icon(Icons.edit_calendar, size: 16, color: AppPalette.muted),
-                    ],
-                  ),
-                ),
-              ),
-              SizedBox(height: 4),
-              Text(
-                'App 前台或后台任务到点自动执行一次；需已保存控车 PIN',
-                style: TextStyle(fontSize: 11, color: AppPalette.subtle),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
   void _toast(String msg) {
+    if (!mounted) return;
     final text = _friendlyControlError(msg);
-    final isError = text.contains('失败') ||
+    final isError =
+        text.contains('失败') ||
         text.contains('拒绝') ||
         text.contains('失效') ||
         text.contains('请') ||
@@ -897,8 +894,7 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
 
   Future<void> _notifyLocal(String title, String body) async {
     try {
-      await NotificationService.instance
-          .notifyPlain(title: title, body: body);
+      await NotificationService.instance.notifyPlain(title: title, body: body);
     } catch (_) {}
   }
 
@@ -929,428 +925,1019 @@ class _QuickControlSheetState extends State<QuickControlSheet> {
 
   @override
   Widget build(BuildContext context) {
-    // 顶栏固定，仅内容区滚动；关闭走小白条下拉 / 点空白
-    return GestureDetector(
-      behavior: HitTestBehavior.translucent,
-      child: Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              // 按住小白条下拉即可关闭（独立弹窗 / App 内同一手势）
-              onVerticalDragEnd: (d) {
-                final v = d.primaryVelocity ?? 0;
-                if (v > 240) {
-                  final close = widget.onClose;
-                  if (close != null) {
-                    close();
-                  } else if (widget.standalone) {
-                    SystemNavigator.pop();
-                  } else {
-                    Navigator.of(context, rootNavigator: true).pop();
-                  }
-                }
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 6),
-                child: Container(
-                  width: 36, height: 4,
-                  decoration: BoxDecoration(
-                    color: AppPalette.track,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
+    final enabled = !_busy && !_bleBusy && _cfg != null;
+    return Column(
+      mainAxisSize: widget.embedded ? MainAxisSize.max : MainAxisSize.min,
+      children: [
+        if (!widget.embedded)
+          Row(
+            children: [
+              const SizedBox(width: 16),
+              const Expanded(
+                child: Text(
+                  '车辆控制',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
                 ),
               ),
-            ),
+              IconButton(
+                tooltip: '关闭控车',
+                onPressed:
+                    widget.onClose ??
+                    () {
+                      if (widget.standalone) {
+                        SystemNavigator.pop();
+                      } else {
+                        Navigator.of(context).pop();
+                      }
+                    },
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          // 控车结果条幅（始终在弹窗内可见）
-          if (_uiMsg != null)
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: _uiMsgIsError
-                    ? AppPalette.dangerBg
-                    : AppPalette.okBg,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: _uiMsgIsError
-                      ? AppPalette.danger.withValues(alpha: 0.35)
-                      : AppPalette.ok.withValues(alpha: 0.35),
-                ),
-              ),
-              child: Text(
-                _uiMsg!,
-                style: TextStyle(
-                  fontSize: 12,
-                  height: 1.35,
-                  fontWeight: FontWeight.w500,
-                  color: _uiMsgIsError ? AppPalette.danger : AppPalette.ok,
-                ),
-              ),
-            ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: Theme.of(context)
-                  .colorScheme
-                  .surfaceContainerHighest
-                  .withOpacity(0.35),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 28,
-                  height: 28,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .primary
-                        .withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    Icons.settings_remote,
-                    size: 16,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text('智能控车',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 15,
-                          color: AppPalette.strong)),
-                ),
-                _bleModeChip(),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Flexible(
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // 车辆位置不在控车弹窗展示
-                  // 实时车况已隐藏：打开控车页即用，不转圈等接口
-                  _actionsSection(),
-                  // 空调 / 预约与锁车键同帧显示，不等车况
-                  const SizedBox(height: 10),
-                  _acCard(!_busy && !_bleBusy),
-                  const SizedBox(height: 8),
-                  _seatHeatSection(!_busy && !_bleBusy),
-                  const SizedBox(height: 10),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: (!_busy && !_bleBusy) ? _openReservation : null,
-                      icon: Icon(
-                        _resPanelOpen ? Icons.expand_less : Icons.schedule,
-                        size: 16,
-                      ),
-                      label: Text(
-                        _resEnabled
-                            ? '预约中：${_resTime.format(context)} · ${_typeLabel(_resType)}'
-                            : '预约加热 / 空调',
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size.fromHeight(40),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+        Flexible(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (_uiMsg != null) ...[
+                      Semantics(
+                        liveRegion: true,
+                        child: GlassSurface(
+                          padding: const EdgeInsets.all(14),
+                          child: Row(
+                            children: [
+                              Icon(
+                                _uiMsgIsError
+                                    ? Icons.info_outline
+                                    : Icons.check_circle_outline,
+                                color: _uiMsgIsError
+                                    ? context.danger
+                                    : context.info,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  _uiMsg!,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                  if (_resPanelOpen) ...[
-                    const SizedBox(height: 10),
-                    _reservationPanel(!_busy && !_bleBusy),
+                      if (BlePermissionController.instance.denied)
+                        TextButton.icon(
+                          onPressed: () async {
+                            final opened = await BlePermissionController
+                                .instance
+                                .openAppSettings();
+                            if (!opened && mounted)
+                              _toast('无法打开应用设置，请手动进入系统设置授权');
+                          },
+                          icon: const Icon(Icons.settings_outlined),
+                          label: const Text('打开应用设置'),
+                        ),
+                      const SizedBox(height: 14),
+                    ],
+                    if (widget.climateOnly) ...[
+                      _climateHero(enabled),
+                      const SizedBox(height: 16),
+                    ] else ...[
+                      _vehicleStage(enabled),
+                      const SizedBox(height: 12),
+                    ],
+                    _temperatureCard(enabled),
+                    const SizedBox(height: 14),
+                    if (widget.climateOnly) ...[
+                      GlassSurface(
+                        child: Row(
+                          children: [
+                            Icon(Icons.air_rounded, color: context.muted),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                '模式与风量请在车内调节',
+                                style: TextStyle(
+                                  color: context.muted,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                    ],
+                    _seatReadOnly(),
+                    const SizedBox(height: 14),
+                    _reservationPanel(enabled),
                   ],
-                ],
+                ),
               ),
             ),
-          ),
-        ],
-      ),
-      ),
-    );
-  }
-
-  /// 标题行内「蓝牙模式」开关 + 连接状态（不再单独占一张卡）
-  Widget _bleModeChip() {
-    final stateText = _blePrefer
-        ? _bleConnected
-            ? (_bleSession.isEmpty ? '已连接' : '已连接 · $_bleSession')
-            : _ble.state == BleBridgeState.connecting ||
-                    _ble.state == BleBridgeState.busy
-                ? '连接中…'
-                : _ble.state == BleBridgeState.error
-                    ? '连接失败'
-                    : '待连接'
-        : '';
-    final color = !_blePrefer
-        ? Colors.grey
-        : _bleConnected
-            ? Colors.green
-            : _ble.state == BleBridgeState.error
-                ? Colors.redAccent
-                : Colors.blueGrey;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(Icons.bluetooth, size: 14, color: color),
-        const SizedBox(width: 4),
-        Text(
-          stateText.isEmpty ? '蓝牙模式' : stateText,
-          style: TextStyle(
-            fontSize: 11,
-            color: _blePrefer ? Colors.blue.shade700 : AppPalette.subtle,
-            fontWeight: _blePrefer ? FontWeight.w600 : FontWeight.w400,
-          ),
-        ),
-        Transform.scale(
-          scale: 0.8,
-          child: Switch(
-            value: _blePrefer,
-            onChanged: (v) async {
-              await _ble.setPrefer(v);
-              if (mounted) {
-                setState(() {
-                  _blePrefer = v;
-                  if (!v) _bleBusy = false; // 关闭蓝牙模式立即释放按钮
-                });
-              }
-              if (v) unawaited(_autoConnectBle());
-            },
           ),
         ),
       ],
     );
   }
 
-  Widget _actionsSection() {
-    final enabled = !_busy && !(_blePrefer && _bleBusy);
-    // 控车网格：解锁 / 锁车 / 找车 / 后备箱（找车用官方 low/30s 参数）
-    final items = <_CtrlItem>[
-      _CtrlItem(Icons.lock_open, '解锁', _unlock, AppPalette.warn),
-      _CtrlItem(Icons.lock, '锁车', _lock, AppPalette.ok),
-      _CtrlItem(Icons.notifications_active, '找车', _find, AppPalette.info),
-      _CtrlItem(Icons.lock_open_outlined, '后备箱', _trunk,
-          const Color(0xFFB8860B)),
-    ];
-
+  Widget _vehicleStage(bool enabled) {
     return Column(
       children: [
         Row(
           children: [
-            for (var i = 0; i < items.length; i++) ...[
-              if (i > 0) const SizedBox(width: 8),
-              Expanded(child: _bigActionBtn(items[i], enabled)),
-            ],
+            Text(
+              'MG5',
+              style: TextStyle(
+                fontSize: 13,
+                color: context.muted,
+                letterSpacing: 2,
+              ),
+            ),
+            const Spacer(),
+            _bleModeChip(),
           ],
         ),
-        // 产品逻辑：解锁即自动下发 driveCycle「120 秒打火」，控车页不再放独立的启动按钮
-        if (_blePrefer) ...[
-          const SizedBox(height: 6),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 326,
+          child: Row(
+            children: [
+              SizedBox(
+                width: 70,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _stageAction(
+                      Icons.lock_outline_rounded,
+                      '车锁',
+                      enabled ? _showLockOptions : null,
+                      id: 'lock',
+                    ),
+                    _stageAction(
+                      Icons.window_rounded,
+                      '车窗',
+                      enabled ? _showWindowOptions : null,
+                      id: 'window',
+                    ),
+                    _stageAction(
+                      Icons.directions_car_outlined,
+                      '后备箱',
+                      enabled ? _trunk : null,
+                      id: 'trunk',
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Semantics(
+                    image: true,
+                    label:
+                        'MG5 车辆俯视状态示意，车锁${_summary?.allLocked == true
+                            ? '已锁'
+                            : _summary?.allLocked == false
+                            ? '未锁'
+                            : '状态未知'}',
+                    child: CustomPaint(
+                      painter: _VehiclePlanPainter(
+                        accent: context.info,
+                        windowsClosed: _summary?.allWindowsClosed,
+                        locked: _summary?.allLocked,
+                      ),
+                      size: const Size(170, 320),
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 70,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _stageAction(
+                      Icons.lock_open_rounded,
+                      '解锁',
+                      enabled ? _unlock : null,
+                      id: 'unlock',
+                    ),
+                    _stageAction(
+                      Icons.volume_up_outlined,
+                      '寻车',
+                      enabled ? _find : null,
+                      id: 'find',
+                    ),
+                    _stageAction(
+                      Icons.ac_unit_rounded,
+                      '空调',
+                      enabled ? _openClimate : null,
+                      id: 'climate',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        Text(
+          _blePrefer ? '蓝牙解锁后，120 秒内可按一键启动' : '远程控车 · 车辆状态以最新回报为准',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: context.muted, fontSize: 12),
+        ),
+        const SizedBox(height: 14),
+      ],
+    );
+  }
+
+  Widget _stageAction(
+    IconData icon,
+    String label,
+    VoidCallback? action, {
+    required String id,
+  }) {
+    final highlighted = widget.initialAction == id;
+    return Semantics(
+      key: ValueKey('vehicle-action-$id'),
+      selected: highlighted,
+      child: SizedBox(
+        width: 70,
+        child: Opacity(
+          opacity: action == null ? 0.45 : 1,
+          child: GlassSurface(
+            onTap: action,
+            tint: highlighted
+                ? Theme.of(context).colorScheme.primaryContainer
+                : null,
+            borderRadius: 20,
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
+            child: Column(
+              children: [
+                Icon(
+                  icon,
+                  size: 24,
+                  color: highlighted ? context.info : context.strong,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: highlighted ? FontWeight.w700 : FontWeight.w500,
+                    color: highlighted ? context.info : context.strong,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showLockOptions() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.lock_outline),
+              title: const Text('锁车'),
+              onTap: () => Navigator.pop(context, 'lock'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.lock_open),
+              title: const Text('解锁'),
+              onTap: () => Navigator.pop(context, 'unlock'),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'lock') await _lock();
+    if (action == 'unlock') await _unlock();
+  }
+
+  Future<void> _showWindowOptions() async {
+    final open = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(title: Text('车窗'), subtitle: Text('车窗操作使用远程控车')),
+            ListTile(
+              leading: const Icon(Icons.open_in_full),
+              title: const Text('打开车窗'),
+              onTap: () => Navigator.pop(context, true),
+            ),
+            ListTile(
+              leading: const Icon(Icons.close_fullscreen),
+              title: const Text('关闭车窗'),
+              onTap: () => Navigator.pop(context, false),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || open == null) return;
+    await _act(
+      open ? '打开车窗' : '关闭车窗',
+      (pin, c) => open
+          ? vehicleWindowOpen(
+              brand: c.brand,
+              token: c.token!,
+              vin: c.vin!,
+              pin: pin,
+              userId: c.userId,
+              mobile: c.mobile,
+              headerDeviceId: c.headerDeviceId,
+              target: 'all',
+              position: 100,
+            )
+          : vehicleWindowClose(
+              brand: c.brand,
+              token: c.token!,
+              vin: c.vin!,
+              pin: pin,
+              userId: c.userId,
+              mobile: c.mobile,
+              headerDeviceId: c.headerDeviceId,
+              target: 'all',
+              position: 0,
+            ),
+    );
+  }
+
+  void _openClimate() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            ClimatePage(token: _cfg?.token ?? '', vin: _cfg?.vin ?? ''),
+      ),
+    );
+  }
+
+  Widget _climateHero(bool enabled) {
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _acOn == true
+                    ? '空调运行中'
+                    : _acOn == false
+                    ? '空调已关闭'
+                    : '空调状态未知',
+                style: TextStyle(color: context.muted, fontSize: 13),
+              ),
+            ),
+            IconButton.filledTonal(
+              key: const ValueKey('climate-power'),
+              tooltip: _acOn == true ? '关闭空调' : '开启空调',
+              onPressed: enabled ? () => _acToggle(_acOn != true) : null,
+              icon: Icon(
+                Icons.power_settings_new_rounded,
+                color: _acOn == true ? context.info : context.muted,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Text('设定温度', style: TextStyle(color: context.muted, fontSize: 12)),
+        const SizedBox(height: 4),
+        Text(
+          '$_targetTemp.0°C',
+          key: const ValueKey('climate-target'),
+          style: const TextStyle(
+            fontSize: 60,
+            fontWeight: FontWeight.w400,
+            letterSpacing: -2,
+            height: 1.2,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '车内 ${_summary?.interiorTemp?.toStringAsFixed(1) ?? '—'}°C  |  车外 ${_summary?.exteriorTemp?.toStringAsFixed(1) ?? '—'}°C',
+          style: TextStyle(color: context.muted, fontSize: 12),
+        ),
+        const SizedBox(height: 18),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: SizedBox(
+            height: 192,
+            width: double.infinity,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                const VehicleImage(),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        context.info.withValues(alpha: 0.02),
+                        context.info.withValues(alpha: 0.15),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_acOn == true)
+                  IgnorePointer(
+                    child: CustomPaint(painter: _AirflowPainter(context.info)),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _setTarget(int value) {
+    setState(() {
+      _temperatureEdited = true;
+      _targetTemp = value.clamp(16, 30);
+    });
+  }
+
+  Widget _temperatureAdjustment(bool enabled) {
+    const valueStyle = TextStyle(
+      fontSize: 32,
+      fontWeight: FontWeight.w500,
+      letterSpacing: -1,
+    );
+    final temperature = '$_targetTemp.0°C';
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final measurement = TextPainter(
+          text: TextSpan(text: temperature, style: valueStyle),
+          textDirection: Directionality.of(context),
+          textScaler: MediaQuery.textScalerOf(context),
+        )..layout();
+        final stacked = measurement.width + 120 > constraints.maxWidth;
+        measurement.dispose();
+        final value = Text(temperature, style: valueStyle);
+        final decrease = IconButton.filledTonal(
+          tooltip: '降低温度',
+          icon: const Icon(Icons.remove_rounded),
+          onPressed: enabled && _targetTemp > 16
+              ? () => _setTarget(_targetTemp - 1)
+              : null,
+        );
+        final increase = IconButton.filledTonal(
+          tooltip: '升高温度',
+          icon: const Icon(Icons.add_rounded),
+          onPressed: enabled && _targetTemp < 30
+              ? () => _setTarget(_targetTemp + 1)
+              : null,
+        );
+        if (stacked) {
+          return Column(
+            children: [
+              Center(
+                child: FittedBox(fit: BoxFit.scaleDown, child: value),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [decrease, increase],
+              ),
+            ],
+          );
+        }
+        return Row(
+          children: [
+            decrease,
+            Expanded(child: Center(child: value)),
+            increase,
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _temperatureCard(bool enabled) {
+    return GlassSurface(
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+      child: Column(
+        children: [
           Row(
             children: [
-              Icon(Icons.key, size: 13, color: AppPalette.subtle),
-              const SizedBox(width: 4),
               Expanded(
                 child: Text(
-                  '解锁后 120 秒内可直接按一键启动',
-                  style: TextStyle(
-                      fontSize: 10.5, color: AppPalette.subtle, height: 1.35),
+                  widget.climateOnly ? '温度调节' : '车内温度',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              if (_busy) ...[
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: context.info,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '处理中',
+                  style: TextStyle(fontSize: 12, color: context.muted),
+                ),
+              ] else if (!widget.climateOnly)
+                Text(
+                  _acOn == true
+                      ? '运行中'
+                      : _acOn == false
+                      ? '已关闭'
+                      : '状态未知',
+                  style: TextStyle(fontSize: 12, color: context.muted),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _temperatureAdjustment(enabled),
+          Slider(
+            value: _targetTemp.toDouble(),
+            min: 16,
+            max: 30,
+            divisions: 14,
+            label: '$_targetTemp°C',
+            activeColor: context.info,
+            onChanged: enabled ? (v) => _setTarget(v.round()) : null,
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '16°C',
+                style: TextStyle(fontSize: 11, color: context.muted),
+              ),
+              Text(
+                '30°C',
+                style: TextStyle(fontSize: 11, color: context.muted),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  key: const ValueKey('climate-apply'),
+                  onPressed: enabled ? _acTempConfirm : null,
+                  icon: const Icon(Icons.ac_unit_rounded, size: 18),
+                  label: Text(_acOn == true ? '应用温度' : '开启空调'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton(
+                key: const ValueKey('climate-off'),
+                onPressed: enabled ? () => _acToggle(false) : null,
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(76, 48),
+                ),
+                child: const Text('关闭'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '温度调整后点击${_acOn == true ? '「应用温度」' : '「开启空调」'}发送',
+            style: TextStyle(fontSize: 11, color: context.muted),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _heatText(bool? on, int? level) {
+    if (on == null) return '未知';
+    if (!on) return '关闭';
+    return level != null && level > 0 ? '$level 档' : '开启';
+  }
+
+  Widget _seatReadOnly() {
+    return GlassSurface(
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.airline_seat_recline_normal_rounded,
+                size: 22,
+                color: context.strong,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  '座椅加热',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                ),
+              ),
+              Text('仅查看', style: TextStyle(color: context.muted, fontSize: 12)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '主驾  ${_heatText(_seatHeatDriver, _seatHeatDriverLevel)}',
+                  style: TextStyle(color: context.muted, fontSize: 13),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  '副驾  ${_heatText(_seatHeatPassenger, _seatHeatPassengerLevel)}',
+                  style: TextStyle(color: context.muted, fontSize: 13),
                 ),
               ),
             ],
           ),
         ],
-      ],
+      ),
     );
   }
 
-  Widget _bigActionBtn(_CtrlItem it, bool enabled) {
-    return ScalePress(
-      enabled: enabled,
-      onPressed: enabled
-          ? () {
-              // 点按控车键：短震动反馈
-              HapticFeedback.mediumImpact();
-              it.onTap();
-            }
-          : null,
-      child: Material(
-        color: it.color.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(it.icon, size: 18, color: it.color),
-              const SizedBox(height: 3),
+  Widget _reservationPanel(bool enabled) {
+    return GlassSurface(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Column(
+        children: [
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.schedule_rounded, color: context.info),
+            title: const Text('预约空调', style: TextStyle(fontSize: 14)),
+            subtitle: Text(
+              _resEnabled ? '${_resTime.format(context)} · 24°C' : '提前准备舒适车厢',
+              style: TextStyle(color: context.muted, fontSize: 12),
+            ),
+            trailing: Icon(
+              _resPanelOpen ? Icons.expand_less : Icons.chevron_right,
+              color: context.muted,
+            ),
+            onTap: enabled ? _openReservation : null,
+          ),
+          if (_resPanelOpen) ...[
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('启用预约', style: TextStyle(fontSize: 14)),
+              value: _resEnabled,
+              onChanged: enabled
+                  ? (v) async {
+                      setState(() => _resEnabled = v);
+                      await _saveReservation();
+                    }
+                  : null,
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('执行时间', style: TextStyle(fontSize: 14)),
+              trailing: Text(_resTime.format(context)),
+              onTap: enabled
+                  ? () async {
+                      final time = await showTimePicker(
+                        context: context,
+                        initialTime: _resTime,
+                      );
+                      if (!mounted || time == null) return;
+                      setState(() => _resTime = time);
+                      if (_resEnabled) await _saveReservation();
+                    }
+                  : null,
+            ),
+            if (_resLastError != null)
               Text(
-                it.label,
+                '上次预约未完成：$_resLastError',
+                style: TextStyle(color: context.danger, fontSize: 12),
+              ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Text(
+                '需已保存控车密码；到点执行一次，后台执行时间受系统限制。',
                 style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w600,
-                  color: AppPalette.strong,
+                  color: context.muted,
+                  fontSize: 11,
+                  height: 1.5,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _acCard(bool enabled) {
-    final temp = (_acTempC ?? 24).clamp(16, 30).toDouble();
-    return Card(
-      elevation: 0,
-      color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.45),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 28,
-                  height: 28,
-                  decoration: BoxDecoration(
-                    color: (_acOn == true
-                            ? const Color(0xFF26A69A)
-                            : AppPalette.muted)
-                        .withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(Icons.ac_unit,
-                      size: 16,
-                      color: _acOn == true
-                          ? const Color(0xFF26A69A)
-                          : AppPalette.muted),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _acOn == true
-                        ? '空调运行中${_acTempC != null ? ' · ${_acTempC}℃' : ''}'
-                        : '空调',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13,
-                        color: AppPalette.strong),
-                  ),
-                ),
-                Switch(
-                  value: _acOn == true,
-                  onChanged: enabled ? (v) => _acToggle(v) : null,
-                ),
-              ],
             ),
-            if (_acOn == true)
-              Row(
-                children: [
-                  Text('16℃', style: TextStyle(fontSize: 11, color: AppPalette.muted)),
-                  Expanded(
-                    child: Slider(
-                      value: temp,
-                      min: 16,
-                      max: 30,
-                      divisions: 14,
-                      label: '${temp.round()}℃',
-                      onChanged: enabled
-                          ? (v) => setState(() => _acTempC = v.round())
-                          : null,
-                      onChangeEnd: (_) => _acTempConfirm(),
-                    ),
-                  ),
-                  Text('${temp.round()}℃',
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: AppPalette.strong)),
-                  const SizedBox(width: 4),
-                ],
-              ),
-            if (_acOn != true)
-              Padding(
-                padding: EdgeInsets.only(top: 4, bottom: 2),
-                child: Text('开启后可滑动调节温度',
-                    style: TextStyle(fontSize: 11, color: AppPalette.muted)),
-              ),
           ],
-        ),
+        ],
       ),
     );
   }
 
-  /// 主/副驾加热：独立于空调卡，放在空调板块下方
-  /// （读状态可用；开关控制需要协议侧补齐对应接口后启用）
-  Widget _seatHeatSection(bool enabled) {
+  Widget _bleModeChip() {
+    final stateText = _blePrefer
+        ? _bleConnected
+              ? (_bleSession.isEmpty ? '已连接' : '已连接 · $_bleSession')
+              : _ble.state == BleBridgeState.connecting ||
+                    _ble.state == BleBridgeState.busy
+              ? '连接中…'
+              : '待连接'
+        : '远程';
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: enabled
-                ? () => _seatHeat(
-                    '1',
-                    !(_seatHeatDriver == true),
-                    _seatHeatDriver == true ? '关主驾加热' : '开主驾加热')
-                : null,
-            icon: const Icon(Icons.chair_alt, size: 16),
-            label: Text(
-              _seatHeatDriver == true
-                  ? '主驾热${_seatHeatDriverLevel != null && _seatHeatDriverLevel! > 0 ? '·${_seatHeatDriverLevel}档' : ''}'
-                  : '主驾加热',
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
+        Icon(
+          _blePrefer ? Icons.bluetooth_rounded : Icons.cloud_outlined,
+          size: 15,
+          color: context.info,
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: enabled
-                ? () => _seatHeat(
-                    '2',
-                    !(_seatHeatPassenger == true),
-                    _seatHeatPassenger == true ? '关副驾加热' : '开副驾加热')
-                : null,
-            icon: const Icon(Icons.chair_alt, size: 16),
-            label: Text(
-              _seatHeatPassenger == true
-                  ? '副驾热${_seatHeatPassengerLevel != null && _seatHeatPassengerLevel! > 0 ? '·${_seatHeatPassengerLevel}档' : ''}'
-                  : '副驾加热',
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
+        const SizedBox(width: 5),
+        Text(stateText, style: TextStyle(fontSize: 11, color: context.muted)),
+        const SizedBox(width: 4),
+        Switch(
+          value: _blePrefer,
+          onChanged: _busy || _bleBusy
+              ? null
+              : (v) async {
+                  await _ble.setPrefer(v);
+                  if (!mounted) return;
+                  setState(() => _blePrefer = v);
+                  // Switching transport selects it; connection begins on explicit action.
+                },
         ),
       ],
     );
   }
 }
 
-/// 大网格控车按钮的数据项
-class _CtrlItem {
-  const _CtrlItem(this.icon, this.label, this.onTap, this.color);
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
+/// A neutral MG5-sized sedan diagram, not a simulated live vehicle rendering.
+/// Metallic bodywork and dark glazing keep the status diagram legible in both
+/// themes without borrowing another manufacturer's vehicle.
+class _VehiclePlanPainter extends CustomPainter {
+  const _VehiclePlanPainter({
+    required this.accent,
+    this.windowsClosed,
+    this.locked,
+  });
+  final Color accent;
+  final bool? windowsClosed;
+  final bool? locked;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = (size.width / 164).clamp(0.0, size.height / 320);
+    canvas.save();
+    canvas.translate(
+      (size.width - 164 * scale) / 2,
+      (size.height - 320 * scale) / 2,
+    );
+    canvas.scale(scale);
+    final body = Path()
+      ..moveTo(82, 7)
+      ..cubicTo(50, 7, 29, 14, 26, 45)
+      ..cubicTo(21, 100, 24, 212, 28, 266)
+      ..cubicTo(30, 296, 44, 311, 82, 312)
+      ..cubicTo(120, 311, 134, 296, 136, 266)
+      ..cubicTo(140, 212, 143, 100, 138, 45)
+      ..cubicTo(135, 14, 114, 7, 82, 7)
+      ..close();
+    canvas.drawShadow(
+      body.shift(const Offset(0, 7)),
+      const Color(0xFF203653),
+      13,
+      true,
+    );
+    final tyre = Paint()..color = const Color(0xFF17202D);
+    for (final x in [20.0, 134.0]) {
+      for (final y in [65.0, 236.0]) {
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(x, y, 10, 37),
+            const Radius.circular(4),
+          ),
+          tyre,
+        );
+      }
+    }
+    canvas.drawPath(
+      body,
+      Paint()
+        ..shader = const LinearGradient(
+          colors: [
+            Color(0xFF667487),
+            Color(0xFFE8EDF4),
+            Color(0xFF9DAAB9),
+            Color(0xFFD9E0E9),
+            Color(0xFF586779),
+          ],
+          stops: [0, .13, .5, .85, 1],
+        ).createShader(const Rect.fromLTWH(24, 0, 116, 320)),
+    );
+    canvas.drawPath(
+      body,
+      Paint()
+        ..color = const Color(0xFF8897A9)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.1,
+    );
+
+    // Sculpted hood and trunk seams.
+    final seam = Paint()
+      ..color = const Color(0xFF75879B)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = .8;
+    canvas.drawPath(
+      Path()
+        ..moveTo(40, 61)
+        ..quadraticBezierTo(82, 51, 124, 61),
+      seam,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(37, 277)
+        ..quadraticBezierTo(82, 291, 127, 277),
+      seam,
+    );
+    for (final x in [39.0, 125.0]) {
+      canvas.drawPath(
+        Path()
+          ..moveTo(x, 29)
+          ..quadraticBezierTo(x - (x < 82 ? 4 : -4), 47, x, 65),
+        seam,
+      );
+    }
+
+    final glass = Path()
+      ..moveTo(43, 89)
+      ..quadraticBezierTo(82, 67, 121, 89)
+      ..lineTo(129, 142)
+      ..lineTo(123, 239)
+      ..quadraticBezierTo(82, 259, 41, 239)
+      ..lineTo(35, 142)
+      ..close();
+    canvas.drawPath(
+      glass,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF65778D), Color(0xFF15212E), Color(0xFF283A4B)],
+        ).createShader(const Rect.fromLTWH(35, 77, 94, 180)),
+    );
+    // Windshield, body-coloured roof, rear windscreen.
+    final roof = RRect.fromRectAndRadius(
+      const Rect.fromLTWH(47, 127, 70, 89),
+      const Radius.circular(14),
+    );
+    canvas.drawRRect(
+      roof,
+      Paint()
+        ..shader = const LinearGradient(
+          colors: [Color(0xFFA5B2C0), Color(0xFFD6DFE8), Color(0xFF7B8CA1)],
+        ).createShader(roof.outerRect),
+    );
+    final reflection = Paint()
+      ..color = const Color(0xFFDAEBFF).withValues(alpha: .22)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4;
+    canvas.drawPath(
+      Path()
+        ..moveTo(47, 95)
+        ..quadraticBezierTo(82, 79, 117, 95),
+      reflection,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(49, 226)
+        ..quadraticBezierTo(82, 239, 115, 226),
+      reflection,
+    );
+    final windowLine = Paint()
+      ..color = windowsClosed == false ? accent : const Color(0xFF6C8299)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = windowsClosed == false ? 2.4 : .8;
+    for (final x in [39.0, 125.0]) {
+      canvas.drawLine(Offset(x, 148), Offset(x, 223), windowLine);
+    }
+    canvas.drawLine(const Offset(36, 175), const Offset(46, 175), seam);
+    canvas.drawLine(const Offset(118, 175), const Offset(128, 175), seam);
+    // Side mirrors.
+    for (final rect in [
+      const Rect.fromLTWH(14, 105, 15, 10),
+      const Rect.fromLTWH(135, 105, 15, 10),
+    ]) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(4)),
+        Paint()..color = const Color(0xFF98A8BA),
+      );
+    }
+    final light = Paint()
+      ..color = const Color(0xFFF1F8FF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(
+      Path()
+        ..moveTo(33, 35)
+        ..quadraticBezierTo(41, 24, 53, 23),
+      light,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(111, 23)
+        ..quadraticBezierTo(123, 24, 131, 35),
+      light,
+    );
+    final tail = Paint()
+      ..color = const Color(0xFFC24F59)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(
+      Path()
+        ..moveTo(34, 283)
+        ..quadraticBezierTo(43, 295, 57, 297),
+      tail,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(107, 297)
+        ..quadraticBezierTo(121, 295, 130, 283),
+      tail,
+    );
+    // Lock indicator is shown only from observed telemetry.
+    if (locked != null) {
+      final indicator = Paint()
+        ..color = accent.withValues(alpha: locked! ? .9 : .25);
+      canvas.drawCircle(const Offset(82, 171), 4, indicator);
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_VehiclePlanPainter oldDelegate) =>
+      oldDelegate.accent != accent ||
+      oldDelegate.windowsClosed != windowsClosed ||
+      oldDelegate.locked != locked;
+}
+
+class _AirflowPainter extends CustomPainter {
+  const _AirflowPainter(this.color);
   final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          color.withValues(alpha: .02),
+          const Color(0xFFB9E5FF).withValues(alpha: .5),
+          color.withValues(alpha: .02),
+        ],
+      ).createShader(Offset.zero & size)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 7
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < 5; i++) {
+      final x = size.width * (.40 + i * .09);
+      canvas.drawPath(
+        Path()
+          ..moveTo(x, size.height * .51)
+          ..cubicTo(
+            x - 12,
+            size.height * .66,
+            x - 30,
+            size.height * .8,
+            x - 55,
+            size.height,
+          ),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_AirflowPainter oldDelegate) => oldDelegate.color != color;
 }

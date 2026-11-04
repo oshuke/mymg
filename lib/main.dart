@@ -11,10 +11,12 @@ import 'package:mymg/src/rust/frb_generated.dart';
 
 import 'alert_rules.dart';
 import 'background.dart';
-import 'home_page.dart';
 import 'login_page.dart';
+import 'legal_documents.dart';
+import 'consented_services.dart';
 import 'notification_service.dart';
 import 'quick_control_sheet.dart';
+import 'product_shell.dart';
 import 'widget_control_host.dart';
 import 'reservation_service.dart';
 import 'shortcut_router.dart';
@@ -41,15 +43,14 @@ const _kVinKey = 'mymg.vin';
 ///                     --dart-define=MYMG_TOKEN=<访问令牌> \
 ///                     --dart-define=MYMG_VIN=<17 位 VIN> \
 ///                     --dart-define=MYMG_PIN=123456
-const _kDebugProbe =
-    String.fromEnvironment('MYMG_DEBUG_PROBE', defaultValue: '');
+const _kDebugProbe = String.fromEnvironment(
+  'MYMG_DEBUG_PROBE',
+  defaultValue: '',
+);
 
-const _kUserToken =
-    String.fromEnvironment('MYMG_TOKEN', defaultValue: '');
-const _kUserVin =
-    String.fromEnvironment('MYMG_VIN', defaultValue: '');
-const _kUserPin =
-    String.fromEnvironment('MYMG_PIN', defaultValue: '');
+const _kUserToken = String.fromEnvironment('MYMG_TOKEN', defaultValue: '');
+const _kUserVin = String.fromEnvironment('MYMG_VIN', defaultValue: '');
+const _kUserPin = String.fromEnvironment('MYMG_PIN', defaultValue: '');
 
 /// Rust 初始化失败时保存的错误信息，供错误页展示
 Object? rustInitError;
@@ -67,14 +68,16 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final platformRoute = WidgetsBinding.instance.platformDispatcher.defaultRouteName;
-    final isQuick = initialRoute == '/quick_control' ||
-        platformRoute == '/quick_control';
+    final platformRoute =
+        WidgetsBinding.instance.platformDispatcher.defaultRouteName;
+    final isQuick =
+        initialRoute == '/quick_control' || platformRoute == '/quick_control';
     // 小组件 ↻：全程透明空白壳，不展示主页
-    final isWidgetRefresh = initialRoute == '/widget_refresh' ||
-        platformRoute == '/widget_refresh';
+    final isWidgetRefresh =
+        initialRoute == '/widget_refresh' || platformRoute == '/widget_refresh';
     // 小组件直接控车：指纹验证后下发，不进完整 UI
-    final isWidgetControl = (initialRoute?.startsWith('/widget_control') ?? false) ||
+    final isWidgetControl =
+        (initialRoute?.startsWith('/widget_control') ?? false) ||
         platformRoute.startsWith('/widget_control');
 
     return ThemeScope(
@@ -90,11 +93,11 @@ class MyApp extends StatelessWidget {
             themeMode: themeCtrl.materialMode,
             // 透明壳时强制透明底，避免主题色挡住桌面
             builder: (context, child) {
-              if (!(isQuick || isWidgetRefresh || isWidgetControl)) return child!;
+              if (!(isQuick || isWidgetRefresh || isWidgetControl))
+                return child!;
               return Theme(
-                data: Theme.of(context).copyWith(
-                  scaffoldBackgroundColor: Colors.transparent,
-                ),
+                data: Theme.of(context)
+                    .copyWith(scaffoldBackgroundColor: Colors.transparent),
                 child: child!,
               );
             },
@@ -105,16 +108,19 @@ class MyApp extends StatelessWidget {
               if (isQuick || initial == '/quick_control') {
                 return [
                   MaterialPageRoute(
-                    builder: (_) => const QuickControlHostPage(standalone: true),
-                  )
+                    builder: (_) => ConsentGate(
+                      onAccepted: startConsentedServices,
+                      builder: (_) =>
+                          const QuickControlHostPage(standalone: true),
+                    ),
+                  ),
                 ];
               }
               if (isWidgetRefresh || initial == '/widget_refresh') {
                 return [
                   MaterialPageRoute(
-                    builder: (_) =>
-                        const ColoredBox(color: Colors.transparent),
-                  )
+                    builder: (_) => const ColoredBox(color: Colors.transparent),
+                  ),
                 ];
               }
               if (isWidgetControl || initial.startsWith('/widget_control')) {
@@ -122,8 +128,11 @@ class MyApp extends StatelessWidget {
                 return [
                   MaterialPageRoute(
                     settings: RouteSettings(name: initial),
-                    builder: (_) => WidgetControlHostPage(controlCode: code),
-                  )
+                    builder: (_) => ConsentGate(
+                      onAccepted: startConsentedServices,
+                      builder: (_) => WidgetControlHostPage(controlCode: code),
+                    ),
+                  ),
                 ];
               }
               return [
@@ -138,20 +147,26 @@ class MyApp extends StatelessWidget {
               final name = settings.name ?? '/';
               if (name == '/quick_control') {
                 return MaterialPageRoute(
-                  builder: (_) => const QuickControlHostPage(standalone: true),
+                  builder: (_) => ConsentGate(
+                    onAccepted: startConsentedServices,
+                    builder: (_) =>
+                        const QuickControlHostPage(standalone: true),
+                  ),
                 );
               }
               if (name == '/widget_refresh') {
                 return MaterialPageRoute(
-                  builder: (_) =>
-                      const ColoredBox(color: Colors.transparent),
+                  builder: (_) => const ColoredBox(color: Colors.transparent),
                 );
               }
               if (name.startsWith('/widget_control')) {
                 final code = int.tryParse(name.split('/').last);
                 return MaterialPageRoute(
                   settings: settings,
-                  builder: (_) => WidgetControlHostPage(controlCode: code),
+                  builder: (_) => ConsentGate(
+                    onAccepted: startConsentedServices,
+                    builder: (_) => WidgetControlHostPage(controlCode: code),
+                  ),
                 );
               }
               return MaterialPageRoute(
@@ -163,16 +178,17 @@ class MyApp extends StatelessWidget {
             initialRoute: isQuick
                 ? '/quick_control'
                 : isWidgetRefresh
-                    ? '/widget_refresh'
-                    : isWidgetControl
-                        ? (initialRoute ?? platformRoute)
-                        : '/',
+                ? '/widget_refresh'
+                : isWidgetControl
+                ? (initialRoute ?? platformRoute)
+                : '/',
           );
         },
       ),
     );
   }
 }
+
 class _Gate extends StatelessWidget {
   const _Gate();
 
@@ -185,20 +201,27 @@ class _Gate extends StatelessWidget {
           return _FatalErrorPage(error: snap.error, stack: snap.stackTrace);
         }
         if (!snap.hasData) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
         // 测试版优先用编译注入的 DEBUG token（--dart-define=MYMG_TOKEN/_VIN）；
         // 正式版走 SharedPreferences（LoginPage 兜底保存）。
         final useDebug = _kUserToken.isNotEmpty || _kUserVin.isNotEmpty;
         final t = useDebug ? _kUserToken : (snap.data?.token ?? '');
         final v = useDebug ? _kUserVin : (snap.data?.vin ?? '');
-        developer.log('[MYMG] _Gate debug=$useDebug tokenLen=${t.length} vin=$v',
-            name: 'mymg_core');
+        developer.log(
+          '[MYMG] _Gate debug=$useDebug tokenLen=${t.length} vin=$v',
+          name: 'mymg_core',
+        );
         final vt = (v.length == 17) ? v : null;
         if (t.isEmpty || vt == null) {
           return const LoginPage();
         }
-        return HomePage(token: t, vin: vt);
+        return ConsentGate(
+          onAccepted: startConsentedServices,
+          builder: (_) => ProductShell(token: t, vin: vt),
+        );
       },
     );
   }
@@ -278,7 +301,8 @@ Future<void> main() async {
       //
       // NotificationService.init() 内部会请求 POST_NOTIFICATIONS（Android 13+）；
       // 用户拒绝时静默吞掉，告警照样可记录，只是不弹系统通知。
-      await NotificationService.instance.init();
+      if (await LegalConsent.isAccepted())
+        await NotificationService.instance.init();
       await AlertRules.reload();
 
       // ★ 长按图标快捷方式：注册通道 + 拉一次冷启动遗留的 action
@@ -332,6 +356,7 @@ Future<void> _handleWidgetSilentRefresh() async {
     final pending = await ch.invokeMethod<bool>('getPending') ?? false;
     if (!pending) return;
     shouldClose = true;
+    if (!await LegalConsent.isAccepted()) return;
     developer.log('[MYMG] 小组件静默刷新开始（透明壳）', name: 'mymg_core');
     try {
       await RustLib.init();
@@ -344,8 +369,10 @@ Future<void> _handleWidgetSilentRefresh() async {
         final s = await fetchSummary(token: token, vin: vin);
         final plate = p.getString('mymg.plate') ?? '';
         await WidgetSync.push(s, vin: vin, plate: plate);
-        developer.log('[MYMG] 小组件静默刷新 OK fuel=${s.fuelPercent}',
-            name: 'mymg_core');
+        developer.log(
+          '[MYMG] 小组件静默刷新 OK fuel=${s.fuelPercent}',
+          name: 'mymg_core',
+        );
       } catch (e) {
         developer.log('[MYMG] 小组件静默刷新失败: $e', name: 'mymg_core');
         await WidgetSync.refresh();
@@ -367,7 +394,9 @@ Future<void> _handleWidgetSilentRefresh() async {
 /// 读 `mymg.bg.enabled`，按值注册或取消后台周期任务
 Future<void> _applyBackground() async {
   final p = await SharedPreferences.getInstance();
-  final enabled = p.getBool(kBackgroundEnabledKey) ?? false;
+  final enabled =
+      await LegalConsent.isAccepted() &&
+      (p.getBool(kBackgroundEnabledKey) ?? false);
   if (enabled) {
     await schedulePeriodicFetch();
   } else {
@@ -379,6 +408,7 @@ Future<void> _applyBackground() async {
 /// 配合 adb logcat -s mymg_core 看 Rust 的请求体/响应体定位 14700/21102 根因。
 Future<void> _runDebugProbeIfRequested() async {
   if (_kDebugProbe.isEmpty) return;
+  if (!await LegalConsent.isAccepted()) return;
   developer.log('[MYMG] debug probe start: $_kDebugProbe', name: 'mymg_core');
   await Future.delayed(const Duration(seconds: 3));
   try {
@@ -386,29 +416,30 @@ Future<void> _runDebugProbeIfRequested() async {
       case 'send_sms':
         // 用一个测试号触发 21102（缺易盾滑块的真实服务端拒绝）
         await authSendSmsCode(phone: '10000000000');
-        developer.log('[MYMG] probe send_sms OK (unexpected!)', name: 'mymg_core');
+        developer.log(
+          '[MYMG] probe send_sms OK (unexpected!)',
+          name: 'mymg_core',
+        );
         break;
       case 'lock':
         // 缺身份字段时直接失败——现代控车需 userId/mobile/headerDeviceId
         developer.log(
-            '[MYMG] probe lock: use Control page (needs userId/mobile/headerDeviceId)',
-            name: 'mymg_core');
+          '[MYMG] probe lock: use Control page (needs userId/mobile/headerDeviceId)',
+          name: 'mymg_core',
+        );
         break;
       case 'user_lock':
         developer.log(
-            '[MYMG] probe user_lock: use Control page UI',
-            name: 'mymg_core');
+          '[MYMG] probe user_lock: use Control page UI',
+          name: 'mymg_core',
+        );
         break;
       case 'mvcode_guess':
         // 已废弃：官方 2.2.4 无 mvcode
-        developer.log('[MYMG] mvcode_guess 已废弃（官方无 mvcode）',
-            name: 'mymg_core');
+        developer.log('[MYMG] mvcode_guess 已废弃（官方无 mvcode）', name: 'mymg_core');
         break;
       case 'vehicle_status':
-        await fetchVehicleStatus(
-          token: '00000000',
-          vin: '00000000000000000',
-        );
+        await fetchVehicleStatus(token: '00000000', vin: '00000000000000000');
         developer.log('[MYMG] probe vehicle_status done', name: 'mymg_core');
         break;
       default:
